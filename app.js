@@ -36,7 +36,7 @@ const ms = (t) => (t?.toMillis ? t.toMillis() : t instanceof Date ? t.getTime() 
 const fmtDate = (t) => { const m = ms(t); if (!m) return ''; const d = new Date(m); return `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`; };
 const work = (id) => S.works.find((w) => w.id === id);
 const workTitle = (id) => work(id)?.title || '';
-const CROWN = '<span class="crown" title="명서 추천"><i class="ti ti-crown"></i>추천</span>';
+const CROWN = '<span class="crown" title="관리자 추천"><i class="ti ti-crown"></i>추천</span>';
 const img = (src, attrs = '') => `<img src="${esc(src)}" referrerpolicy="no-referrer" loading="lazy" ${attrs}>`;
 const ytId = (u) => { const m = String(u).match(/(?:youtu\.be\/|v=|shorts\/|embed\/)([\w-]{11})/); return m ? m[1] : null; };
 const instaUrl = (v) => (!v ? '' : /^https?:/.test(v) ? v : `https://www.instagram.com/${v.replace(/^@/, '')}`);
@@ -72,8 +72,8 @@ async function boot() {
   if (!snap.exists()) { renderNav(); return renderAuth('onboard'); }
   S.me = snap.data();
   renderNav();
-  if (S.me.role === 'banned') { view().innerHTML = '<div class="card narrow">이용이 제한된 계정이야. 관리자에게 문의해줘.</div>'; return; }
-  try { await loadAll(); } catch (e) { view().innerHTML = `<div class="card narrow">데이터를 불러오지 못했어.<div class="err">${esc(e.message)}</div></div>`; return; }
+  if (S.me.role === 'banned') { view().innerHTML = '<div class="card narrow">이용이 제한된 계정입니다. 관리자에게 문의해 주세요.</div>'; return; }
+  try { await loadAll(); } catch (e) { view().innerHTML = `<div class="card narrow">데이터를 불러오지 못했습니다.<div class="err">${esc(e.message)}</div></div>`; return; }
   const saved = sessionStorage.getItem('mestudio-import');
   if (saved && !S.pendingImport) { S.pendingImport = JSON.parse(saved); }
   if (S.pendingImport && isProducer()) location.hash = '#/new';
@@ -110,11 +110,11 @@ function renderAuth(mode) {
         let id = $('#lid').value.trim();
         if (!id.includes('@')) {
           const u = await getDoc(doc(db, 'usernames', id.toLowerCase()));
-          if (!u.exists()) throw new Error('없는 아이디야.');
+          if (!u.exists()) throw new Error('존재하지 않는 아이디입니다.');
           id = u.data().email;
         }
         await signInWithEmailAndPassword(auth, id, $('#lpw').value);
-      } catch (e) { $('#err').textContent = e.message.includes('auth/') ? '아이디나 비밀번호가 맞지 않아.' : e.message; }
+      } catch (e) { $('#err').textContent = e.message.includes('auth/') ? '아이디 또는 비밀번호가 일치하지 않습니다.' : e.message; }
     };
     $('#go').onclick = go;
     $('#lpw').onkeydown = (e) => e.key === 'Enter' && go();
@@ -129,15 +129,17 @@ function renderAuth(mode) {
       <div class="err" id="err"></div>
       <button class="primary" id="go" style="width:100%">재설정 메일 보내기</button>
       <a href="#" id="back" class="hint" style="display:block;margin-top:12px">로그인으로</a></div>`;
-    $('#go').onclick = async () => { try { await sendPasswordResetEmail(auth, $('#rem').value.trim()); $('#err').textContent = '메일을 보냈어. 메일함을 확인해줘.'; } catch (e) { $('#err').textContent = e.message; } };
+    $('#go').onclick = async () => { try { await sendPasswordResetEmail(auth, $('#rem').value.trim()); $('#err').textContent = '재설정 메일을 발송했습니다. 메일함을 확인해 주세요.'; } catch (e) { $('#err').textContent = e.message; } };
     $('#back').onclick = (e) => { e.preventDefault(); renderAuth('login'); };
     return;
   }
   const onboard = mode === 'onboard';
   v.innerHTML = `<div class="card narrow"><div class="h1">${onboard ? '추가 정보 입력' : '회원가입'}</div>
-    ${onboard ? '<div class="hint">Google 계정으로 가입했어. 아래 정보만 채우면 끝이야.</div>' : ''}
+    ${onboard ? '<div class="hint">Google 계정으로 가입되었습니다. 아래 정보를 입력하면 가입이 완료됩니다.</div>' : ''}
     <label class="f">이름</label><input id="sname" value="${esc(onboard ? S.user?.displayName || '' : '')}">
-    <label class="f">아이디 (영문 소문자·숫자·_ 3~20자)</label><input id="sid" autocomplete="username">
+    <label class="f">아이디 (영문 소문자·숫자·_ 3~20자)</label>
+    <div class="inline" style="flex-wrap:nowrap"><input id="sid" autocomplete="username" style="flex:1;width:100%"><button id="sidcheck" type="button" style="white-space:nowrap">중복 확인</button></div>
+    <div class="hint" id="sidmsg" style="margin-top:4px;min-height:1em"></div>
     ${onboard ? '' : `<label class="f">비밀번호 (6자 이상)</label><input id="spw" type="password" autocomplete="new-password">
     <label class="f">이메일 (비밀번호 찾기용)</label><input id="sem" type="email">`}
     <label class="f">소속 (회사/학교명)</label><input id="saff" placeholder="중앙대학교 영화학과">
@@ -146,18 +148,32 @@ function renderAuth(mode) {
     ${onboard ? '<button id="cancel" style="width:100%;margin-top:8px">다른 계정으로 로그인</button>' : '<a href="#" id="back" class="hint" style="display:block;margin-top:12px">로그인으로</a>'}</div>`;
   if ($('#back')) $('#back').onclick = (e) => { e.preventDefault(); renderAuth('login'); };
   if ($('#cancel')) $('#cancel').onclick = () => signOut(auth);
+  let checkedId = null;
+  const checkId = async () => {
+    const msg = $('#sidmsg'), id = $('#sid').value.trim().toLowerCase();
+    checkedId = null; msg.style.color = 'var(--danger)';
+    if (!/^[a-z0-9_]{3,20}$/.test(id)) { msg.textContent = '영문 소문자, 숫자, _ 조합 3~20자로 입력해 주세요.'; return false; }
+    try {
+      if ((await getDoc(doc(db, 'usernames', id))).exists()) { msg.textContent = '이미 사용 중인 아이디입니다.'; return false; }
+    } catch (e) { msg.textContent = '확인 중 오류가 발생했습니다.'; return false; }
+    checkedId = id; msg.style.color = 'var(--ok)'; msg.textContent = '사용 가능한 아이디입니다.';
+    return true;
+  };
+  $('#sidcheck').onclick = checkId;
+  $('#sid').oninput = () => { checkedId = null; $('#sidmsg').textContent = ''; };
   $('#go').onclick = async () => {
+    if (checkedId !== $('#sid').value.trim().toLowerCase() && !(await checkId())) { $('#err').textContent = '아이디 중복 확인을 해 주세요.'; return; }
     const err = $('#err');
     const name = $('#sname').value.trim(), uid = $('#sid').value.trim().toLowerCase(), aff = $('#saff').value.trim();
-    if (!name || !aff) return (err.textContent = '이름과 소속은 꼭 적어줘.');
-    if (!/^[a-z0-9_]{3,20}$/.test(uid)) return (err.textContent = '아이디 형식을 확인해줘.');
+    if (!name || !aff) return (err.textContent = '이름과 소속을 입력해 주세요.');
+    if (!/^[a-z0-9_]{3,20}$/.test(uid)) return (err.textContent = '아이디 형식을 확인해 주세요.');
     try {
-      if ((await getDoc(doc(db, 'usernames', uid))).exists()) return (err.textContent = '이미 쓰는 아이디야.');
+      if ((await getDoc(doc(db, 'usernames', uid))).exists()) return (err.textContent = '이미 사용 중인 아이디입니다.');
       let user = S.user, email;
       if (onboard) { email = user.email; }
       else {
         email = $('#sem').value.trim();
-        if (!email) return (err.textContent = '이메일을 적어줘.');
+        if (!email) return (err.textContent = '이메일을 입력해 주세요.');
         S.signingUp = true;
         user = (await createUserWithEmailAndPassword(auth, email, $('#spw').value)).user;
       }
@@ -182,7 +198,7 @@ function route() {
   if (a === 'me') return renderMe(b || 'info', c);
   return renderList();
 }
-const renderNoAuth = () => { view().innerHTML = '<div class="card narrow">제작자 이상만 쓸 수 있는 기능이야.</div>'; };
+const renderNoAuth = () => { view().innerHTML = '<div class="card narrow">제작자 이상만 이용할 수 있는 기능입니다.</div>'; };
 
 /* ---------- 공통 클릭 ---------- */
 document.addEventListener('click', (e) => {
@@ -198,7 +214,7 @@ async function toggleFav(id) {
   const b = writeBatch(db);
   b.set(doc(db, 'favorites', S.user.uid), { ids: on ? arrayRemove(id) : arrayUnion(id) }, { merge: true });
   b.update(doc(db, 'profiles', id), { favCount: increment(on ? -1 : 1) });
-  try { await b.commit(); } catch (e) { return toast('즐겨찾기 실패: ' + e.message); }
+  try { await b.commit(); } catch (e) { return toast('즐겨찾기에 실패했습니다: ' + e.message); }
   on ? S.favs.delete(id) : S.favs.add(id);
   p.favCount = Math.max(0, (p.favCount || 0) + (on ? -1 : 1));
   $$(`[data-fav="${id}"]`).forEach((el) => { el.classList.toggle('on', !on); el.innerHTML = `${!on ? '★' : '☆'} ${p.favCount}`; });
@@ -307,7 +323,7 @@ function renderList() {
     </section></div>`;
   const draw = () => {
     const list = filtered();
-    $('#results').innerHTML = `<div class="count">${list.length}명</div>` + (list.length ? list.map(rowHTML).join('') : `<div class="empty">${S.profiles.length ? '조건에 맞는 배우가 없어.' : '아직 등록된 프로필이 없어.'}</div>`);
+    $('#results').innerHTML = `<div class="count">${list.length}명</div>` + (list.length ? list.map(rowHTML).join('') : `<div class="empty">${S.profiles.length ? '조건에 맞는 배우가 없습니다.' : '등록된 프로필이 없습니다.'}</div>`);
   };
   $$('[data-f]').forEach((el) => {
     const k = el.dataset.f;
@@ -325,7 +341,7 @@ function renderList() {
 /* ---------- 상세 ---------- */
 async function renderDetail(id) {
   const p = S.profiles.find((x) => x.id === id);
-  if (!p) { view().innerHTML = '<div class="card narrow">프로필을 찾을 수 없어.</div>'; return; }
+  if (!p) { view().innerHTML = '<div class="card narrow">프로필을 찾을 수 없습니다.</div>'; return; }
   const pv = S.privates[id] || {};
   const fav = S.favs.has(id);
   const photos = p.photos || [];
@@ -372,12 +388,12 @@ async function renderDetail(id) {
           <div class="stat wide"><div class="l">특기</div><div class="v">${esc(p.specialty || '-')}</div></div>
         </div>
         <div class="contact"><span class="sub">연락처</span>
-          ${isProducer() ? `<span>${esc(pv.phone || '-')}</span><span>${esc(pv.email || '')}</span>` : '<span class="sub">제작자 이상만 볼 수 있어</span>'}
+          ${isProducer() ? `<span>${esc(pv.phone || '-')}</span><span>${esc(pv.email || '')}</span>` : '<span class="sub">제작자 이상만 열람할 수 있습니다</span>'}
           <span class="lock-badge" style="margin-left:auto"><i class="ti ti-lock"></i>제작자 이상</span></div>
         <div class="meta-line">등록: ${esc(p.createdByName || '')} · ${fmtDate(p.createdAt)}${p.editCount ? ` · 수정 ${p.editCount}회` : ''}</div>
       </div>
     </div>
-    <div class="sec"><div class="h2"><i class="ti ti-movie"></i>지원 및 수집 경로</div>${workCards || '<div class="hint">연결된 작품이 없어.</div>'}</div>
+    <div class="sec"><div class="h2"><i class="ti ti-movie"></i>지원 및 수집 경로</div>${workCards || '<div class="hint">연결된 작품이 없습니다.</div>'}</div>
     <div class="grid2">
       <div class="sec" id="rateSec"><div class="h2"><i class="ti ti-mood-smile"></i>작업 만족도</div><div class="hint">불러오는 중…</div></div>
       <div class="sec" id="cmtSec"><div class="h2"><i class="ti ti-message"></i>제작자 코멘트</div><div class="hint">불러오는 중…</div></div>
@@ -411,7 +427,7 @@ async function loadRatings(p) {
     <div class="rsum">${Object.entries(RATES).map(([k, v]) => `<span>${v} ${sum[k]}</span>`).join('')}</div>
     ${rs.map((r) => `<div class="item"><div class="who"><b>${esc(r.name)}</b>${r.workId && work(r.workId) ? `〈${esc(workTitle(r.workId))}〉` : ''}<span class="chip ${r.value === 'good' ? 'sel' : ''}">${RATES[r.value]}</span>
       ${(r.uid === S.user.uid || isOwner()) ? `<span class="acts"><button data-rdel="${r.id}">삭제</button></span>` : ''}</div>
-      ${r.comment ? `<div>${esc(r.comment)}</div>` : ''}</div>`).join('') || '<div class="hint">아직 평가가 없어.</div>'}
+      ${r.comment ? `<div>${esc(r.comment)}</div>` : ''}</div>`).join('') || '<div class="hint">등록된 평가가 없습니다.</div>'}
     ${isProducer() ? `<div style="margin-top:10px;border-top:1px solid var(--line);padding-top:10px">
       <div class="inline">
         <select id="rwork"><option value="">작품 선택 안 함</option>${workOrder.map((w) => `<option value="${w.id}">${esc(w.title)}</option>`).join('')}</select>
@@ -419,14 +435,14 @@ async function loadRatings(p) {
       </div>
       <input id="rcm" placeholder="코멘트 (선택)" style="margin-top:6px">
       <button class="primary" id="rsave" style="margin-top:6px">평가 남기기</button>
-      <div class="hint">같은 작품으로 다시 남기면 덮어써져.</div></div>` : ''}`;
+      <div class="hint">같은 작품으로 다시 등록하면 기존 평가가 수정됩니다.</div></div>` : ''}`;
   const syncSummary = async () => {
     const all = (await getDocs(collection(db, 'profiles', p.id, 'ratings'))).docs.map((d) => d.data());
     const s = { good: 0, soso: 0, bad: 0 }; all.forEach((r) => s[r.value]++);
     await updateDoc(doc(db, 'profiles', p.id), { ratingSummary: s }); p.ratingSummary = s;
   };
   $$('[data-rdel]', sec).forEach((b) => b.onclick = async () => {
-    if (!confirm('이 평가를 삭제할까?')) return;
+    if (!confirm('이 평가를 삭제하시겠습니까?')) return;
     await deleteDoc(doc(db, 'profiles', p.id, 'ratings', b.dataset.rdel));
     if (isProducer()) await syncSummary(); loadRatings(p);
   });
@@ -435,7 +451,7 @@ async function loadRatings(p) {
     await setDoc(doc(db, 'profiles', p.id, 'ratings', `${S.user.uid}_${workId || 'none'}`), {
       uid: S.user.uid, name: S.me.name, workId, value: $('input[name=rv]:checked').value, comment: $('#rcm').value.trim(), createdAt: serverTimestamp(),
     });
-    await syncSummary(); loadRatings(p); toast('평가를 남겼어');
+    await syncSummary(); loadRatings(p); toast('평가가 등록되었습니다');
   };
 }
 
@@ -452,7 +468,7 @@ async function loadComments(p) {
       <span class="acts">${!reply && isProducer() ? `<button data-reply="${c.id}">답글</button>` : ''}${c.uid === S.user.uid ? `<button data-cedit="${c.id}">수정</button>` : ''}${(c.uid === S.user.uid || isOwner()) ? `<button data-cdel="${c.id}">삭제</button>` : ''}</span></div>
     <div style="white-space:pre-wrap">${esc(c.text)}</div></div>`;
   sec.innerHTML = `<div class="h2"><i class="ti ti-message"></i>제작자 코멘트</div>
-    ${tops.map((c) => one(c) + cs.filter((r) => r.parentId === c.id).map((r) => one(r, true)).join('')).join('') || '<div class="hint">아직 코멘트가 없어.</div>'}
+    ${tops.map((c) => one(c) + cs.filter((r) => r.parentId === c.id).map((r) => one(r, true)).join('')).join('') || '<div class="hint">등록된 코멘트가 없습니다.</div>'}
     ${isProducer() ? `<div style="margin-top:10px;border-top:1px solid var(--line);padding-top:10px">
       <div id="replyTo" class="hint"></div>
       <textarea id="ctext" placeholder="코멘트 쓰기" style="min-height:60px"></textarea>
@@ -462,7 +478,7 @@ async function loadComments(p) {
   let parentId = null;
   $$('[data-reply]', sec).forEach((b) => b.onclick = () => {
     parentId = b.dataset.reply; const c = cs.find((x) => x.id === parentId);
-    $('#replyTo').innerHTML = `${esc(c.name)}님에게 답글 · <a href="#" id="noreply">취소</a>`;
+    $('#replyTo').innerHTML = `${esc(c.name)}님에게 답글 작성 중 · <a href="#" id="noreply">취소</a>`;
     $('#noreply').onclick = (e) => { e.preventDefault(); parentId = null; $('#replyTo').innerHTML = ''; };
     $('#ctext').focus();
   });
@@ -472,7 +488,7 @@ async function loadComments(p) {
     await updateDoc(doc(ref, c.id), { text: t.trim(), editedAt: serverTimestamp() }); loadComments(p);
   });
   $$('[data-cdel]', sec).forEach((b) => b.onclick = async () => {
-    if (!confirm('이 코멘트를 삭제할까?')) return;
+    if (!confirm('이 코멘트를 삭제하시겠습니까?')) return;
     await deleteDoc(doc(ref, b.dataset.cdel)); loadComments(p);
   });
   if ($('#csave')) $('#csave').onclick = async () => {
@@ -485,7 +501,7 @@ async function loadComments(p) {
 /* ---------- 등록/수정 ---------- */
 function renderEdit(id) {
   const editing = id ? S.profiles.find((x) => x.id === id) : null;
-  if (id && !editing) { view().innerHTML = '<div class="card narrow">프로필을 찾을 수 없어.</div>'; return; }
+  if (id && !editing) { view().innerHTML = '<div class="card narrow">프로필을 찾을 수 없습니다.</div>'; return; }
   const imp = !editing && S.pendingImport ? S.pendingImport : null;
   const p = editing || imp || {};
   const pv = editing ? S.privates[id] || {} : { phone: imp?.phone || '', email: imp?.email || '', stages: {} };
@@ -494,8 +510,8 @@ function renderEdit(id) {
   const dup = imp?.fmUrl ? S.profiles.find((x) => x.fmUrl === imp.fmUrl) : null;
 
   view().innerHTML = `
-    ${imp ? `<div class="importbar"><b>필름메이커스에서 불러왔어.</b> 내용 확인하고 저장해줘. <button id="dropImp" class="ghost">불러온 내용 버리기</button>
-      ${dup ? `<div style="margin-top:6px">이미 등록된 배우야 → <a href="#/p/${dup.id}">${esc(dup.name)} 프로필 보기</a></div>` : ''}</div>` : ''}
+    ${imp ? `<div class="importbar"><b>필름메이커스에서 정보를 불러왔습니다.</b> 내용을 확인한 후 저장해 주세요. <button id="dropImp" class="ghost">불러온 내용 버리기</button>
+      ${dup ? `<div style="margin-top:6px">이미 등록된 배우입니다 → <a href="#/p/${dup.id}">${esc(dup.name)} 프로필 보기</a></div>` : ''}</div>` : ''}
     <div class="h1">${editing ? '프로필 수정' : '프로필 등록'}</div>
     <div class="card">
       <div class="h2">기본 정보</div>
@@ -571,7 +587,7 @@ function renderEdit(id) {
           <span class="hint">진행 단계 (선택)</span>
           <select data-k="stage"><option value="">-</option>${Object.entries(STAGES).map(([k, v]) => `<option value="${k}" ${r.stage === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
         </div></div>`;
-    }).join('') || '<div class="hint" style="margin-bottom:8px">연결된 작품이 없어. 작품을 연결하면 그 작품 준비 중에 지원·수집한 프로필로 묶여.</div>';
+    }).join('') || '<div class="hint" style="margin-bottom:8px">연결된 작품이 없습니다. 작품을 연결하면 해당 작품 준비 과정에서 지원·수집한 프로필로 분류됩니다.</div>';
     $$('.wrow', box).forEach((el) => {
       const i = +el.dataset.i, r = rows[i];
       $$('select[data-k]', el).forEach((s) => s.onchange = async () => {
@@ -602,12 +618,12 @@ function renderEdit(id) {
   if ($('#dropImp')) $('#dropImp').onclick = () => { S.pendingImport = null; sessionStorage.removeItem('mestudio-import'); renderEdit(null); };
   $('#cancel').onclick = () => { history.back(); };
   if ($('#del')) $('#del').onclick = async () => {
-    if (!confirm(`${editing.name} 프로필을 삭제할까? 되돌릴 수 없어.`)) return;
+    if (!confirm(`${editing.name} 프로필을 삭제하시겠습니까? 삭제 후에는 복구할 수 없습니다.`)) return;
     await deleteDoc(doc(db, 'profiles', id));
     S.profiles = S.profiles.filter((x) => x.id !== id); location.hash = '#/';
   };
   $('#save').onclick = async () => {
-    const name = $('#e_name').value.trim(); if (!name) return toast('이름은 꼭 적어줘');
+    const name = $('#e_name').value.trim(); if (!name) return toast('이름을 입력해 주세요');
     const valid = rows.filter((r) => r.workId);
     const data = {
       name, gender: $('#e_gender').value, birthYear: num($('#e_birth').value), height: num($('#e_height').value), weight: num($('#e_weight').value),
@@ -633,7 +649,7 @@ function renderEdit(id) {
       await setDoc(doc(db, 'profiles', pid, 'private', 'info'), priv);
       S.privates[pid] = priv;
       location.hash = `#/p/${pid}`;
-    } catch (e) { btn.disabled = false; btn.textContent = '저장'; toast('저장 실패: ' + e.message); }
+    } catch (e) { btn.disabled = false; btn.textContent = '저장'; toast('저장에 실패했습니다: ' + e.message); }
   };
 }
 
@@ -649,7 +665,7 @@ async function addRole(wk) {
 /* ---------- 작품 페이지 ---------- */
 function renderWork(wid) {
   const wk = work(wid);
-  if (!wk) { view().innerHTML = '<div class="card narrow">작품을 찾을 수 없어.</div>'; return; }
+  if (!wk) { view().innerHTML = '<div class="card narrow">작품을 찾을 수 없습니다.</div>'; return; }
   const linked = S.profiles.filter((p) => (p.works || []).some((w) => w.workId === wid));
   const groups = [...(wk.roles || []), { id: '', name: '배역 미지정', desc: '' }].map((ro) => ({
     ro, ps: linked.filter((p) => (p.works || []).some((w) => w.workId === wid && (w.roleId || '') === ro.id)),
@@ -666,7 +682,7 @@ function renderWork(wid) {
     <div class="board">${groups.map((g) => `<div class="col">
       <div class="h2" style="margin-bottom:2px">${esc(g.ro.name)} ${isProducer() && g.ro.id ? `<button class="ghost" data-erole="${g.ro.id}" style="margin-left:auto;padding:0 6px"><i class="ti ti-pencil"></i></button>` : ''}</div>
       ${g.ro.desc ? `<div class="hint" style="margin-bottom:8px">${esc(g.ro.desc)}</div>` : ''}
-      ${g.ps.map(mini).join('') || '<div class="hint">아직 없음</div>'}</div>`).join('') || '<div class="hint">배역도 연결된 프로필도 아직 없어.</div>'}</div>`;
+      ${g.ps.map(mini).join('') || '<div class="hint">없음</div>'}</div>`).join('') || '<div class="hint">등록된 배역과 연결된 프로필이 없습니다.</div>'}</div>`;
   if (!isProducer()) return;
   $('#newrole').onclick = async () => { if (await addRole(wk)) renderWork(wid); };
   $('#rename').onclick = async () => {
@@ -698,47 +714,47 @@ async function renderMe(tab) {
       <div class="hint" style="margin-top:8px">권한: ${ROLES[S.me.role]}</div></div>`;
     $('#msave').onclick = async () => {
       const name = $('#m_name').value.trim(), affiliation = $('#m_aff').value.trim();
-      if (!name || !affiliation) return toast('이름과 소속은 비울 수 없어');
-      await updateDoc(doc(db, 'users', S.user.uid), { name, affiliation }); Object.assign(S.me, { name, affiliation }); renderNav(); toast('저장했어');
+      if (!name || !affiliation) return toast('이름과 소속을 입력해 주세요');
+      await updateDoc(doc(db, 'users', S.user.uid), { name, affiliation }); Object.assign(S.me, { name, affiliation }); renderNav(); toast('저장되었습니다');
     };
-    $('#mpw').onclick = async () => { await sendPasswordResetEmail(auth, S.me.email); toast('메일을 보냈어'); };
+    $('#mpw').onclick = async () => { await sendPasswordResetEmail(auth, S.me.email); toast('재설정 메일을 발송했습니다'); };
   } else if (tab === 'favs') {
     const list = S.profiles.filter((p) => S.favs.has(p.id)).sort((a, b) => (b.featured ? 1 : 0) - (a.featured ? 1 : 0) || a.name.localeCompare(b.name, 'ko'));
-    body.innerHTML = list.map(rowHTML).join('') || '<div class="empty">아직 즐겨찾기한 배우가 없어. 목록에서 ☆를 눌러봐.</div>';
+    body.innerHTML = list.map(rowHTML).join('') || '<div class="empty">즐겨찾기한 배우가 없습니다. 목록에서 ☆를 눌러 추가할 수 있습니다.</div>';
   } else if (tab === 'mine') {
     const list = S.profiles.filter((p) => p.createdBy === S.user.uid).sort((a, b) => ms(b.createdAt) - ms(a.createdAt));
-    body.innerHTML = list.map(rowHTML).join('') || '<div class="empty">아직 등록한 프로필이 없어.</div>';
+    body.innerHTML = list.map(rowHTML).join('') || '<div class="empty">등록한 프로필이 없습니다.</div>';
   } else if (tab === 'comments') {
     body.innerHTML = '<div class="loading">불러오는 중…</div>';
     try {
       const snap = await getDocs(query(collectionGroup(db, 'comments'), where('uid', '==', S.user.uid)));
       const cs = snap.docs.map((d) => d.data()).sort((a, b) => ms(b.createdAt) - ms(a.createdAt));
-      body.innerHTML = cs.map((c) => `<div class="item" data-go="#/p/${c.profileId}" style="cursor:pointer"><div class="who"><b>${esc(c.profileName)}</b><span>${fmtDate(c.createdAt)}</span>${c.parentId ? '<span>답글</span>' : ''}${c.producerOnly ? '<span class="lock-badge">제작자만</span>' : ''}</div><div>${esc(c.text)}</div></div>`).join('') || '<div class="empty">아직 쓴 댓글이 없어.</div>';
+      body.innerHTML = cs.map((c) => `<div class="item" data-go="#/p/${c.profileId}" style="cursor:pointer"><div class="who"><b>${esc(c.profileName)}</b><span>${fmtDate(c.createdAt)}</span>${c.parentId ? '<span>답글</span>' : ''}${c.producerOnly ? '<span class="lock-badge">제작자만</span>' : ''}</div><div>${esc(c.text)}</div></div>`).join('') || '<div class="empty">작성한 댓글이 없습니다.</div>';
     } catch (e) {
       const link = (e.message.match(/https:\/\/console\.firebase\.google\.com\S+/) || [])[0];
-      body.innerHTML = `<div class="card">처음 한 번 Firestore 색인을 만들어야 해.${link ? ` <a href="${esc(link)}" target="_blank" rel="noopener">여기를 눌러서 색인 만들기</a> → 몇 분 뒤 새로고침.` : `<div class="err">${esc(e.message)}</div>`}</div>`;
+      body.innerHTML = `<div class="card">최초 1회 Firestore 색인 생성이 필요합니다.${link ? ` <a href="${esc(link)}" target="_blank" rel="noopener">색인 만들기</a> 후 몇 분 뒤 새로고침해 주세요.` : `<div class="err">${esc(e.message)}</div>`}</div>`;
     }
   } else if (tab === 'bookmarklet') {
     const site = location.origin + location.pathname;
     const code = `javascript:${encodeURIComponent(`(${bookmarklet.toString()})(${JSON.stringify(site)})`)}`;
     body.innerHTML = `<div class="card" style="max-width:640px">
       <div class="h2">필름메이커스 담기 버튼</div>
-      <p>아래 버튼을 즐겨찾기 막대로 끌어다 놓으면 설치 끝이야. 필름메이커스 배우 프로필에서 그 버튼을 누르면 정보가 Me.Studio 등록 화면으로 넘어와.</p>
+      <p>아래 버튼을 즐겨찾기 막대로 끌어다 놓으면 설치가 완료됩니다. 필름메이커스 배우 프로필에서 이 버튼을 누르면 정보가 Me.Studio 등록 화면으로 전달됩니다.</p>
       <p><a class="bm" id="bm" href="${esc(code)}">Me.Studio에 담기</a></p>
-      <p class="hint">끌어다 놓기가 안 되면: 아무 페이지나 즐겨찾기에 추가한 다음, 그 즐겨찾기를 편집해서 주소 칸에 아래 코드를 통째로 붙여넣어.</p>
+      <p class="hint">끌어다 놓기가 되지 않는 경우: 아무 페이지나 즐겨찾기에 추가한 뒤, 해당 즐겨찾기를 편집하여 주소 칸에 아래 코드를 전부 붙여넣어 주세요.</p>
       <textarea readonly style="min-height:90px;font-size:11px" id="bmcode">${esc(code)}</textarea>
       <button id="bmcopy" style="margin-top:6px">코드 복사</button>
-      <p class="hint">전화번호는 필름메이커스에서 '전화번호 보기'를 먼저 눌러둔 상태여야 같이 담겨. 첨부 PDF는 로그인 상태일 때 링크가 담겨.</p></div>`;
-    $('#bm').onclick = (e) => { e.preventDefault(); toast('클릭 말고 즐겨찾기 막대로 끌어다 놔줘'); };
-    $('#bmcopy').onclick = () => { navigator.clipboard.writeText(code); toast('복사했어'); };
+      <p class="hint">전화번호는 필름메이커스에서 '전화번호 보기'를 먼저 눌러야 함께 저장됩니다. 첨부 PDF는 로그인 상태에서만 링크가 저장됩니다.</p></div>`;
+    $('#bm').onclick = (e) => { e.preventDefault(); toast('클릭하지 말고 즐겨찾기 막대로 끌어다 놓아 주세요'); };
+    $('#bmcopy').onclick = () => { navigator.clipboard.writeText(code); toast('복사되었습니다'); };
   } else if (tab === 'members') {
     const snap = await getDocs(collection(db, 'users'));
     const us = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => ms(b.createdAt) - ms(a.createdAt));
     body.innerHTML = `<div class="card"><table class="t"><tr><th>이름</th><th>아이디</th><th>이메일</th><th>소속</th><th>가입일</th><th>권한</th></tr>
       ${us.map((u) => `<tr><td>${esc(u.name)}</td><td>${esc(u.username)}</td><td>${esc(u.email)}</td><td>${esc(u.affiliation)}</td><td>${fmtDate(u.createdAt)}</td>
       <td>${u.id === S.user.uid ? ROLES[u.role] : `<select data-uid="${u.id}">${['visitor', 'producer', 'banned'].map((r) => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${ROLES[r]}</option>`).join('')}</select>`}</td></tr>`).join('')}</table>
-      <div class="hint" style="margin-top:8px">'이용 제한'으로 바꾸면 그 계정은 아무것도 볼 수 없어.</div></div>`;
-    $$('[data-uid]').forEach((s) => s.onchange = async () => { await updateDoc(doc(db, 'users', s.dataset.uid), { role: s.value }); toast('권한을 바꿨어'); });
+      <div class="hint" style="margin-top:8px">'이용 제한'으로 변경하면 해당 계정은 사이트를 이용할 수 없습니다.</div></div>`;
+    $$('[data-uid]').forEach((s) => s.onchange = async () => { await updateDoc(doc(db, 'users', s.dataset.uid), { role: s.value }); toast('권한이 변경되었습니다'); });
   }
 }
 
@@ -751,13 +767,13 @@ window.addEventListener('message', (e) => {
   S.pendingImport = payload;
   sessionStorage.setItem('mestudio-import', JSON.stringify(payload));
   if (!S.loaded) return;
-  if (!isProducer()) { toast('프로필 등록은 제작자 이상만 할 수 있어'); return; }
+  if (!isProducer()) { toast('프로필 등록은 제작자 이상만 가능합니다'); return; }
   if (location.hash === '#/new') renderEdit(null); else location.hash = '#/new';
 });
 
 /* ---------- 북마클릿 본체 (필름메이커스 페이지에서 실행됨) ---------- */
 function bookmarklet(SITE) {
-  if (!/filmmakers\.co\.kr\/actorProfiles\/\d+/.test(location.href)) { alert('필름메이커스 배우 프로필 페이지에서 눌러줘'); return; }
+  if (!/filmmakers\.co\.kr\/actorProfiles\/\d+/.test(location.href)) { alert('필름메이커스 배우 프로필 페이지에서 눌러 주세요'); return; }
   const main = document.querySelector('main') || document.body;
   const field = (label) => {
     const s = [...main.querySelectorAll('span')].find((x) => x.textContent.trim() === label && !x.closest('select'));
@@ -806,7 +822,7 @@ function bookmarklet(SITE) {
     fmUrl: location.href.split('?')[0].split('#')[0],
   };
   const w = window.open(SITE + '#/new', 'mestudio');
-  if (!w) { alert('팝업이 차단됐어. 이 사이트 팝업을 허용하고 다시 눌러줘'); return; }
+  if (!w) { alert('팝업이 차단되었습니다. 팝업을 허용한 후 다시 눌러 주세요'); return; }
   const origin = new URL(SITE).origin; let tries = 0;
   const t = setInterval(() => { tries++; try { w.postMessage({ type: 'mestudio-import', payload: data }, origin); } catch (e) { /* 로딩 중 */ } if (tries > 120) clearInterval(t); }, 1000);
   window.addEventListener('message', (e) => { if (e.origin === origin && e.data && e.data.type === 'mestudio-ack') clearInterval(t); });
