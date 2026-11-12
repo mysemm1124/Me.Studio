@@ -55,6 +55,11 @@ service cloud.firestore {
       allow delete: if isOwner();
     }
 
+    match /config/{d} {
+      allow read: if isProducer();
+      allow write: if isOwner();
+    }
+
     match /favorites/{uid} {
       allow read, write: if isMember() && request.auth.uid == uid;
     }
