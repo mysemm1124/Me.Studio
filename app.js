@@ -76,6 +76,12 @@ async function boot() {
   const snap = await getDoc(doc(db, 'users', S.user.uid));
   if (!snap.exists()) { renderNav(); return renderAuth('onboard'); }
   S.me = snap.data();
+  S.newMembers = 0;
+  if (S.me.role === 'owner') {
+    getDocs(query(collection(db, 'users'), where('createdAt', '>', S.me.membersSeenAt || new Date(0))))
+      .then((q) => { S.newMembers = q.docs.filter((d) => d.id !== S.user.uid).length; renderNav(); if (location.hash.startsWith('#/me') && !location.hash.includes('members')) route(true); })
+      .catch(() => {});
+  }
   renderNav();
   if (S.me.role === 'banned') { view().innerHTML = '<div class="card narrow">이용이 제한된 계정입니다. 관리자에게 문의해 주세요.</div>'; return; }
   const saved = sessionStorage.getItem('mestudio-import');
@@ -106,7 +112,7 @@ function renderNav() {
   n.innerHTML = `
     <a href="#/">목록</a>
     ${isProducer() ? '<a href="#/new"><i class="ti ti-plus"></i> 프로필 등록</a>' : ''}
-    <a href="#/me">마이페이지</a>
+    <a href="#/me" class="navme">마이페이지${S.newMembers ? '<span class="dot"></span>' : ''}</a>
     <span class="who">${esc(S.me.name)} · ${ROLES[S.me.role] || ''}</span>
     <button id="logout">로그아웃</button>`;
   $('#logout').onclick = () => signOut(auth);
@@ -704,6 +710,7 @@ function renderEdit(id) {
     finally { drop.classList.remove('busy'); dropfile.value = ''; }
   };
   drop.onclick = () => dropfile.click();
+  if (imp && S.pendingFile) { const pf = S.pendingFile; S.pendingFile = null; setTimeout(() => handleFile(pf), 0); }
   dropfile.onchange = () => handleFile(dropfile.files[0]);
   drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('over'); };
   drop.ondragleave = () => drop.classList.remove('over');
@@ -954,7 +961,7 @@ function renderWork(wid) {
 async function renderMe(tab) {
   const tabs = [['info', '내 정보'], ['favs', '즐겨찾기'], ...(isProducer() ? [['mine', '내가 등록한 프로필'], ['comments', '내 댓글'], ['bookmarklet', '필름메이커스 담기 버튼']] : []), ...(isOwner() ? [['members', '회원 관리'], ['ai', 'AI 설정']] : [])];
   if (!tabs.some(([k]) => k === tab)) tab = 'info';
-  view().innerHTML = `<div class="tabs">${tabs.map(([k, v]) => `<a href="#/me/${k}" class="${k === tab ? 'on' : ''}">${v}</a>`).join('')}</div><div id="tabbody"></div>`;
+  view().innerHTML = `<div class="tabs">${tabs.map(([k, v]) => `<a href="#/me/${k}" class="${k === tab ? 'on' : ''}">${v}${k === 'members' && S.newMembers ? '<span class="dot"></span>' : ''}</a>`).join('')}</div><div id="tabbody"></div>`;
   const body = $('#tabbody');
   if (tab === 'info') {
     body.innerHTML = `<div class="card" style="max-width:460px">
@@ -1014,13 +1021,19 @@ async function renderMe(tab) {
       catch (e) { toast('저장에 실패했습니다: ' + e.message); }
     };
   } else if (tab === 'members') {
+    const seen = ms(S.me.membersSeenAt);
     const snap = await getDocs(collection(db, 'users'));
     const us = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => ms(b.createdAt) - ms(a.createdAt));
     body.innerHTML = `<div class="card"><table class="t"><tr><th>이름</th><th>아이디</th><th>이메일</th><th>소속</th><th>가입일</th><th>권한</th></tr>
-      ${us.map((u) => `<tr><td>${esc(u.name)}</td><td>${esc(u.username)}</td><td>${esc(u.email)}</td><td>${esc(u.affiliation)}</td><td>${fmtDate(u.createdAt)}</td>
+      ${us.map((u) => `<tr><td>${esc(u.name)}${u.id !== S.user.uid && ms(u.createdAt) > seen ? ' <span class="newb">NEW</span>' : ''}</td><td>${esc(u.username)}</td><td>${esc(u.email)}</td><td>${esc(u.affiliation)}</td><td>${fmtDate(u.createdAt)}</td>
       <td>${u.id === S.user.uid ? ROLES[u.role] : `<select data-uid="${u.id}">${['visitor', 'producer', 'banned'].map((r) => `<option value="${r}" ${u.role === r ? 'selected' : ''}>${ROLES[r]}</option>`).join('')}</select>`}</td></tr>`).join('')}</table>
       <div class="hint" style="margin-top:8px">'이용 제한'으로 변경하면 해당 계정은 사이트를 이용할 수 없습니다.</div></div>`;
     $$('[data-uid]').forEach((s) => s.onchange = async () => { await updateDoc(doc(db, 'users', s.dataset.uid), { role: s.value }); toast('권한이 변경되었습니다'); });
+    if (S.newMembers || !S.me.membersSeenAt) {
+      updateDoc(doc(db, 'users', S.user.uid), { membersSeenAt: serverTimestamp() }).catch(() => {});
+      S.me.membersSeenAt = new Date(); S.newMembers = 0; renderNav();
+      $$('.tabs .dot').forEach((d) => d.remove());
+    }
   }
 }
 
@@ -1031,6 +1044,7 @@ window.addEventListener('message', (e) => {
   const payload = e.data.payload;
   if (S.pendingImport?.fmUrl === payload.fmUrl) return;
   S.pendingImport = payload;
+  S.pendingFile = e.data.file?.blob ? new File([e.data.file.blob], e.data.file.name || 'profile.pdf', { type: e.data.file.blob.type }) : null;
   sessionStorage.setItem('mestudio-import', JSON.stringify(payload));
   if (!S.loaded) return;
   if (!isProducer()) { toast('프로필 등록은 제작자 이상만 가능합니다'); return; }
@@ -1092,7 +1106,16 @@ function bookmarklet(SITE) {
   };
   const w = window.open(SITE + '#/new', 'mestudio');
   if (!w) { alert('팝업이 차단되었습니다. 팝업을 허용한 후 다시 눌러 주세요'); return; }
-  const origin = new URL(SITE).origin; let tries = 0;
-  const t = setInterval(() => { tries++; try { w.postMessage({ type: 'mestudio-import', payload: data }, origin); } catch (e) { /* 로딩 중 */ } if (tries > 120) clearInterval(t); }, 1000);
-  window.addEventListener('message', (e) => { if (e.origin === origin && e.data && e.data.type === 'mestudio-ack') clearInterval(t); });
+  const origin = new URL(SITE).origin;
+  const target = files.find((u) => /\.(pdf|pptx)(\?|$)/i.test(decodeURIComponent(u)));
+  const send = (file) => {
+    let tries = 0;
+    const t = setInterval(() => { tries++; try { w.postMessage({ type: 'mestudio-import', payload: data, file }, origin); } catch (e) { /* 로딩 중 */ } if (tries > 120) clearInterval(t); }, 1000);
+    window.addEventListener('message', (e) => { if (e.origin === origin && e.data && e.data.type === 'mestudio-ack') clearInterval(t); });
+  };
+  if (!target) return send(null);
+  fetch(target, { credentials: 'include' })
+    .then((r) => (r.ok ? r.blob() : null))
+    .then((blob) => send(blob && blob.size < 18 * 1024 * 1024 && !/text\/html/.test(blob.type) ? { blob, name: decodeURIComponent(target.split('/').pop().split('?')[0]) } : null))
+    .catch(() => send(null));
 }
