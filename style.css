@@ -169,3 +169,6 @@ table.t select{width:auto}
 .pickbox{width:22px;height:22px;border-radius:6px;border:1.5px solid var(--line2);background:#fff;display:flex;align-items:center;justify-content:center;flex-shrink:0;color:#fff;font-size:14px}
 .row.picked{border-color:var(--ink);background:#F4FAFC}
 .row.picked .pickbox{background:var(--ink);border-color:var(--ink)}
+.navme,.tabs a{position:relative}
+.dot{position:absolute;top:4px;right:2px;width:7px;height:7px;border-radius:50%;background:#E5484D}
+.newb{font-size:10px;font-weight:700;color:#fff;background:#E5484D;border-radius:4px;padding:1px 5px;vertical-align:middle}
