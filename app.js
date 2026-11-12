@@ -367,7 +367,8 @@ async function renderDetail(id) {
     <div class="dtop">
       <div>
         <div class="mainphoto" id="mainphoto">${photos[0] ? img(photos[0]) : '<i class="ti ti-user"></i>'}</div>
-        ${photos.length > 1 ? `<div class="thumbs">${photos.map((u, i) => img(u, `data-i="${i}" class="${i === 0 ? 'on' : ''}"`)).join('')}</div>` : ''}
+        ${photos.length > 1 ? `<div class="thumbs">${photos.map((u, i) => img(u, `data-i="${i}" class="${i === 0 ? 'on' : ''} ${i >= 10 ? 'more' : ''}"`)).join('')}</div>
+        ${photos.length > 10 ? `<button id="morePh" class="ghost" style="width:100%;margin-top:6px;font-size:13px;color:var(--sub)">사진 ${photos.length - 10}장 더보기</button>` : ''}` : ''}
       </div>
       <div>
         <div class="dname">
@@ -391,21 +392,25 @@ async function renderDetail(id) {
           ${isProducer() ? `<span>${esc(pv.phone || '-')}</span><span>${esc(pv.email || '')}</span>` : '<span class="sub">제작자 이상만 열람할 수 있습니다</span>'}
           <span class="lock-badge" style="margin-left:auto"><i class="ti ti-lock"></i>제작자 이상</span></div>
         <div class="meta-line">등록: ${esc(p.createdByName || '')} · ${fmtDate(p.createdAt)}${p.editCount ? ` · 수정 ${p.editCount}회` : ''}</div>
-      </div>
-    </div>
     <div class="sec"><div class="h2"><i class="ti ti-movie"></i>지원 및 수집 경로</div>${workCards || '<div class="hint">연결된 작품이 없습니다.</div>'}</div>
     <div class="grid2">
       <div class="sec" id="rateSec"><div class="h2"><i class="ti ti-mood-smile"></i>작업 만족도</div><div class="hint">불러오는 중…</div></div>
       <div class="sec" id="cmtSec"><div class="h2"><i class="ti ti-message"></i>제작자 코멘트</div><div class="hint">불러오는 중…</div></div>
     </div>
     ${vids ? `<div class="sec"><div class="h2"><i class="ti ti-player-play"></i>출연영상</div><div class="vids">${vids}</div></div>` : ''}
-    ${p.filmo ? `<div class="sec"><details><summary>참여작품</summary><div class="filmo">${esc(p.filmo)}</div></details></div>` : ''}`;
+    ${p.filmo ? `<div class="sec"><details><summary>참여작품</summary><div class="filmo">${esc(p.filmo)}</div></details></div>` : ''}
+      </div>
+    </div>`;
 
   $$('.thumbs img').forEach((t) => t.onclick = () => {
     $('#mainphoto').innerHTML = img(photos[t.dataset.i]);
     $$('.thumbs img').forEach((x) => x.classList.remove('on')); t.classList.add('on');
     bindMain();
   });
+  if ($('#morePh')) $('#morePh').onclick = () => {
+    const open = $('.thumbs').classList.toggle('all');
+    $('#morePh').textContent = open ? '사진 접기' : `사진 ${photos.length - 10}장 더보기`;
+  };
   const bindMain = () => { const m = $('#mainphoto img'); if (m) m.onclick = () => window.open(m.src, '_blank'); };
   bindMain();
   if ($('#featBtn')) $('#featBtn').onclick = async () => {
