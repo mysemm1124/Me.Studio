@@ -1,0 +1,62 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{db}/documents {
+    function signedIn() { return request.auth != null; }
+    function role() {
+      return signedIn() && exists(/databases/$(db)/documents/users/$(request.auth.uid))
+        ? get(/databases/$(db)/documents/users/$(request.auth.uid)).data.role : 'none';
+    }
+    function isMember() { return role() in ['visitor', 'producer', 'owner']; }
+    function isProducer() { return role() in ['producer', 'owner']; }
+    function isOwner() { return role() == 'owner'; }
+    function changed() { return request.resource.data.diff(resource.data).affectedKeys(); }
+
+    match /users/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isOwner());
+      allow create: if signedIn() && request.auth.uid == uid && request.resource.data.role == 'visitor';
+      allow update: if isOwner() || (signedIn() && request.auth.uid == uid && !changed().hasAny(['role', 'username']));
+    }
+
+    match /usernames/{name} {
+      allow read: if true;
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+    }
+
+    match /profiles/{pid} {
+      allow read: if isProducer() || (isMember() && resource.data.hidden == false);
+      allow create: if isProducer() && request.resource.data.featured == false;
+      allow update: if (isProducer() && (isOwner() || !changed().hasAny(['featured'])))
+        || (isMember() && resource.data.hidden == false && changed().hasOnly(['favCount']));
+      allow delete: if isOwner() || (isProducer() && resource.data.createdBy == request.auth.uid);
+
+      match /private/{d} {
+        allow read, write: if isProducer();
+      }
+      match /ratings/{rid} {
+        allow read: if isMember();
+        allow create: if isProducer() && request.resource.data.uid == request.auth.uid;
+        allow update: if isProducer() && resource.data.uid == request.auth.uid && request.resource.data.uid == request.auth.uid;
+        allow delete: if isOwner() || (isProducer() && resource.data.uid == request.auth.uid);
+      }
+      match /comments/{cid} {
+        allow create: if isProducer() && request.resource.data.uid == request.auth.uid;
+        allow update: if isProducer() && resource.data.uid == request.auth.uid && request.resource.data.uid == request.auth.uid;
+        allow delete: if isOwner() || (isProducer() && resource.data.uid == request.auth.uid);
+      }
+    }
+
+    match /{path=**}/comments/{cid} {
+      allow read: if isProducer() || (isMember() && resource.data.producerOnly == false);
+    }
+
+    match /works/{wid} {
+      allow read: if isMember();
+      allow create, update: if isProducer();
+      allow delete: if isOwner();
+    }
+
+    match /favorites/{uid} {
+      allow read, write: if isMember() && request.auth.uid == uid;
+    }
+  }
+}
