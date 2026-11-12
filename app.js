@@ -18,7 +18,7 @@ const FM_ORIGIN = 'https://www.filmmakers.co.kr';
 const S = {
   user: null, me: null, profiles: [], works: [], favs: new Set(), privates: {},
   filters: { q: '', gender: '', ageMin: '', ageMax: '', hMin: '', hMax: '', tags: [], by: '', rate: '', work: '', stage: '', favOnly: false, sort: 'default' },
-  pendingImport: null, signingUp: false, loaded: false,
+  pendingImport: null, signingUp: false, loaded: false, selMode: false, sel: new Set(),
 };
 
 /* ---------- 유틸 ---------- */
@@ -213,6 +213,7 @@ function route(keepScroll) {
   const y = window.scrollY;
   if (!keepScroll) window.scrollTo(0, 0);
   else requestAnimationFrame(() => window.scrollTo(0, y));
+  if (a) { S.selMode = false; S.sel.clear(); }
   if (a === 'p' && b) return renderDetail(b);
   if (a === 'new') return isProducer() ? renderEdit(null) : renderNoAuth();
   if (a === 'edit' && b) return isProducer() ? renderEdit(b) : renderNoAuth();
@@ -293,13 +294,15 @@ function filtered() {
   return list;
 }
 
-function rowHTML(p) {
+function rowHTML(p, selectable = false) {
   const fav = S.favs.has(p.id);
+  const picked = selectable && S.sel.has(p.id);
   const ag = p.birthYear ? `${p.birthYear}년생 (${age(p.birthYear)})` : '';
   const works = [...new Set((p.works || []).map((w) => workTitle(w.workId)).filter(Boolean))];
   const r = p.ratingSummary || {};
   const meta = [p.height && `${p.height}cm`, p.weight && `${p.weight}kg`, p.specialty].filter(Boolean).join(' · ');
-  return `<div class="row ${p.featured ? 'feat' : ''}" data-go="#/p/${p.id}">
+  return `<div class="row ${p.featured ? 'feat' : ''} ${picked ? 'picked' : ''}" data-go="#/p/${p.id}" ${selectable ? `data-pick="${p.id}"` : ''}>
+    ${selectable ? `<span class="pickbox">${picked ? '<i class="ti ti-check"></i>' : ''}</span>` : ''}
     <div class="thumb">${p.photos?.[0] ? coverImg(p) : '<i class="ti ti-user"></i>'}</div>
     <div class="row-main">
       <div class="row-top"><span class="nm">${esc(p.name)}</span>${p.featured ? CROWN : ''}${p.hidden ? '<span class="lock-badge"><i class="ti ti-lock"></i>방문자 비공개</span>' : ''}<span class="sub">${esc([p.gender, ag].filter(Boolean).join(' · '))}</span></div>
@@ -340,13 +343,63 @@ function renderList() {
       <div class="listhead">
         <input data-f="q" placeholder="이름, 특기, 작품, 이미지로 검색" value="${esc(f.q)}">
         <select data-f="sort"><option value="default">추천·연관도순</option><option value="favs" ${f.sort === 'favs' ? 'selected' : ''}>즐겨찾기 많은 순</option><option value="recent" ${f.sort === 'recent' ? 'selected' : ''}>최근 등록순</option></select>
+        ${isOwner() ? `<button id="selBtn" class="selbtn ${S.selMode ? 'on' : ''}">${S.selMode ? '선택 해제' : '선택'}</button>` : ''}
       </div>
+      <div id="selbar"></div>
       <div id="results"></div>
     </section></div>`;
-  const draw = () => {
-    const list = filtered();
-    $('#results').innerHTML = `<div class="count">${list.length}명</div>` + (list.length ? list.map(rowHTML).join('') : `<div class="empty">${S.profiles.length ? '조건에 맞는 배우가 없습니다.' : '등록된 프로필이 없습니다.'}</div>`);
+  let list = [];
+  const drawBar = () => {
+    const bar = $('#selbar'); if (!bar) return;
+    if (!S.selMode) { bar.innerHTML = ''; return; }
+    const n = S.sel.size, allOn = list.length && list.every((p) => S.sel.has(p.id));
+    bar.innerHTML = `<div class="selbar">
+      <b>${n}명 선택됨</b>
+      <button data-act="all">${allOn ? '전체 해제' : '전체 선택'}</button>
+      <span style="margin-left:auto" class="inline">
+        <button data-act="hide" ${n ? '' : 'disabled'}><i class="ti ti-lock"></i> 방문자 비공개</button>
+        <button data-act="show" ${n ? '' : 'disabled'}><i class="ti ti-lock-open"></i> 공개</button>
+        <button data-act="feat" ${n ? '' : 'disabled'}><i class="ti ti-crown"></i> 추천</button>
+        <button data-act="unfeat" ${n ? '' : 'disabled'}>추천 해제</button>
+        <button data-act="del" class="danger" ${n ? '' : 'disabled'}><i class="ti ti-trash"></i> 삭제</button>
+      </span></div>`;
+    $$('[data-act]', bar).forEach((b) => b.onclick = () => bulk(b.dataset.act));
   };
+  const draw = () => {
+    list = filtered();
+    $('#results').innerHTML = `<div class="count">${list.length}명</div>` + (list.length ? list.map((p) => rowHTML(p, S.selMode)).join('') : `<div class="empty">${S.profiles.length ? '조건에 맞는 배우가 없습니다.' : '등록된 프로필이 없습니다.'}</div>`);
+    $$('[data-pick]').forEach((row) => row.addEventListener('click', (e) => {
+      if (e.target.closest('[data-fav]')) return;
+      e.stopPropagation();
+      const id = row.dataset.pick; S.sel.has(id) ? S.sel.delete(id) : S.sel.add(id);
+      draw();
+    }, true));
+    drawBar();
+  };
+  const bulk = async (act) => {
+    const ids = [...S.sel];
+    if (act === 'all') { const allOn = list.every((p) => S.sel.has(p.id)); list.forEach((p) => (allOn ? S.sel.delete(p.id) : S.sel.add(p.id))); return draw(); }
+    if (!ids.length) return;
+    const names = ids.map((id) => S.profiles.find((p) => p.id === id)?.name).filter(Boolean);
+    if (act === 'del' && !confirm(`${names.length}명의 프로필을 삭제하시겠습니까?\n${names.slice(0, 10).join(', ')}${names.length > 10 ? ' 외' : ''}\n\n삭제 후에는 복구할 수 없습니다.`)) return;
+    const patch = { hide: { hidden: true }, show: { hidden: false }, feat: { featured: true }, unfeat: { featured: false } }[act];
+    try {
+      if (act === 'del') {
+        for (const id of ids) await deleteProfileDeep(id);
+        S.profiles = S.profiles.filter((p) => !S.sel.has(p.id));
+      } else {
+        for (let i = 0; i < ids.length; i += 400) {
+          const b = writeBatch(db);
+          ids.slice(i, i + 400).forEach((id) => b.update(doc(db, 'profiles', id), patch));
+          await b.commit();
+        }
+        S.profiles.forEach((p) => { if (S.sel.has(p.id)) Object.assign(p, patch); });
+      }
+      toast(act === 'del' ? `${ids.length}명의 프로필이 삭제되었습니다` : `${ids.length}명에게 적용되었습니다`);
+      S.sel.clear(); draw();
+    } catch (e) { toast('처리에 실패했습니다: ' + e.message); }
+  };
+  if ($('#selBtn')) $('#selBtn').onclick = () => { S.selMode = !S.selMode; S.sel.clear(); renderList(); };
   $$('[data-f]').forEach((el) => {
     const k = el.dataset.f;
     const ev = el.tagName === 'INPUT' && el.type !== 'checkbox' ? 'input' : 'change';
@@ -711,7 +764,7 @@ function renderEdit(id) {
   $('#cancel').onclick = () => { history.back(); };
   if ($('#del')) $('#del').onclick = async () => {
     if (!confirm(`${editing.name} 프로필을 삭제하시겠습니까? 삭제 후에는 복구할 수 없습니다.`)) return;
-    await deleteDoc(doc(db, 'profiles', id));
+    await deleteProfileDeep(id);
     S.profiles = S.profiles.filter((x) => x.id !== id); location.hash = '#/';
   };
   $('#save').onclick = async () => {
@@ -811,15 +864,38 @@ async function analyzeFile(file) {
   const ai = await getAI();
   if (!ai?.key) throw new Error('Gemini API 키가 등록되지 않았습니다. 관리자가 마이페이지 > AI 설정에서 등록해야 합니다.');
   const parts = await fileToParts(file);
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(ai.model || 'gemini-flash-latest')}:generateContent`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': ai.key },
-    body: JSON.stringify({ contents: [{ role: 'user', parts: [...parts, { text: AI_PROMPT }] }], generationConfig: { responseMimeType: 'application/json' } }),
-  });
-  const j = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error('분석에 실패했습니다: ' + (j.error?.message || res.status));
+  const body = JSON.stringify({ contents: [{ role: 'user', parts: [...parts, { text: AI_PROMPT }] }], generationConfig: { responseMimeType: 'application/json' } });
+  const models = [...new Set([ai.model || 'gemini-flash-latest', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-flash-lite-latest'])];
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  let j = null, lastErr = '';
+  let alive = [...models];
+  outer: for (let round = 0; round < 3; round++) {
+    if (round) await wait(2000 * round);
+    for (const m of [...alive]) {
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(m)}:generateContent`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': ai.key }, body,
+      }).catch(() => null);
+      const data = res ? await res.json().catch(() => ({})) : {};
+      if (res && res.ok) { j = data; break outer; }
+      lastErr = data.error?.message || (res ? res.status : '네트워크 오류');
+      if (res && (res.status === 404 || res.status === 400 && /model/i.test(lastErr))) { alive = alive.filter((x) => x !== m); continue; }
+      const busy = !res || [429, 500, 503].includes(res.status);
+      if (!busy) throw new Error('분석에 실패했습니다: ' + lastErr);
+    }
+    if (!alive.length) break;
+  }
+  if (!j) throw new Error(/demand|overload|unavailable|quota|exhausted/i.test(lastErr) ? 'Gemini 서버 사용량이 많아 분석하지 못했습니다. 잠시 후 다시 시도해 주세요.' : '분석에 실패했습니다: ' + lastErr);
   const text = (j.candidates?.[0]?.content?.parts || []).map((x) => x.text || '').join('').replace(/^```(?:json)?|```$/g, '').trim();
   try { return JSON.parse(text); } catch (e) { throw new Error('분석 결과를 해석하지 못했습니다. 다시 시도해 주세요.'); }
+}
+
+async function deleteProfileDeep(id) {
+  for (const sub of ['ratings', 'comments']) {
+    const snap = await getDocs(collection(db, 'profiles', id, sub)).catch(() => null);
+    if (snap) for (const d of snap.docs) await deleteDoc(d.ref).catch(() => {});
+  }
+  await deleteDoc(doc(db, 'profiles', id, 'private', 'info')).catch(() => {});
+  await deleteDoc(doc(db, 'profiles', id));
 }
 
 async function addRole(wk) {
