@@ -37,7 +37,20 @@ const fmtDate = (t) => { const m = ms(t); if (!m) return ''; const d = new Date(
 const work = (id) => S.works.find((w) => w.id === id);
 const workTitle = (id) => work(id)?.title || '';
 const CROWN = '<span class="crown" title="관리자 추천"><i class="ti ti-crown"></i>추천</span>';
-const img = (src, attrs = '') => `<img src="${esc(src)}" referrerpolicy="no-referrer" loading="lazy" ${attrs}>`;
+const img = (src, attrs = '') => (String(src).startsWith('msimg:')
+  ? `<img data-msimg="${esc(String(src).slice(6))}" alt="" ${attrs}>`
+  : `<img src="${esc(src)}" referrerpolicy="no-referrer" loading="lazy" ${attrs}>`);
+const imgCache = new Map();
+const loadImg = (id) => {
+  if (!imgCache.has(id)) imgCache.set(id, getDoc(doc(db, 'images', id)).then((d) => (d.exists() ? d.data().data : '')).catch(() => ''));
+  return imgCache.get(id);
+};
+const hydrate = () => document.querySelectorAll('img[data-msimg]:not([src])').forEach((el) => {
+  el.setAttribute('src', 'data:image/gif;base64,R0lGODlhAQABAAAAACw=');
+  loadImg(el.dataset.msimg).then((d) => { if (d) el.src = d; });
+});
+new MutationObserver(hydrate).observe(document.documentElement, { childList: true, subtree: true });
+const openImage = (src) => { if (!src.startsWith('data:')) return window.open(src, '_blank'); const w = window.open(); if (w) w.document.write(`<body style="margin:0;background:#111;display:flex;align-items:center;justify-content:center;min-height:100vh"><img src="${src}" style="max-width:100%;max-height:100vh"></body>`); };
 const posOf = (p) => p?.coverPos ? `${p.coverPos.x}% ${p.coverPos.y}%` : '50% 25%';
 const coverImg = (p) => img(p.photos[0], `style="object-position:${posOf(p)}"`);
 const ytId = (u) => { const m = String(u).match(/(?:youtu\.be\/|v=|shorts\/|embed\/)([\w-]{11})/); return m ? m[1] : null; };
@@ -519,7 +532,7 @@ async function renderDetail(id) {
     const open = $('.thumbs').classList.toggle('all');
     $('#morePh').textContent = open ? '사진 접기' : `사진 ${photos.length - 10}장 더보기`;
   };
-  const bindMain = () => { const m = $('#mainphoto img'); if (m) m.onclick = () => window.open(m.src, '_blank'); };
+  const bindMain = () => { const m = $('#mainphoto img'); if (m) m.onclick = () => openImage(m.src); };
   bindMain();
   if ($('#featBtn')) $('#featBtn').onclick = async () => {
     await updateDoc(doc(db, 'profiles', id), { featured: !p.featured });
@@ -635,6 +648,7 @@ function renderEdit(id) {
       <input type="file" id="dropfile" accept=".pdf,.pptx,.jpg,.jpeg,.png,.webp" hidden>
     </div>
     <div id="dropmsg" class="hint" style="margin:-6px 0 12px">시간이 많이 소요됩니다. AI 서버 환경에 따라 실패하거나, 오류가 발생할 수 있습니다.</div>
+    <div id="photoPick"></div>
     <div class="card">
       <div class="h2">기본 정보</div>
       <div class="row3">
@@ -666,7 +680,7 @@ function renderEdit(id) {
     <div class="card" style="margin-top:14px">
       <div class="h2">사진 · 영상</div>
       <label class="f">사진 주소 (한 줄에 하나, 첫 줄이 대표 사진)</label><textarea id="e_photos">${esc((p.photos || []).join('\n'))}</textarea>
-      <div class="prev" id="photoprev"></div>
+      <div class="prev" id="photoprev"></div><div class="hint" id="newimgHint"></div>
       <label class="f">출연영상 링크 (한 줄에 하나)</label><textarea id="e_videos" style="min-height:50px">${esc((p.videos || []).join('\n'))}</textarea>
       <label class="f">참여작품</label><textarea id="e_filmo" style="min-height:140px">${esc(p.filmo)}</textarea>
       <label class="f">프로필 본문 (자기소개 등)</label><textarea id="e_intro" style="min-height:100px">${esc(p.intro)}</textarea>
@@ -706,6 +720,11 @@ function renderEdit(id) {
       if (vids.length) { const cur = lines($('#e_videos').value); const add = vids.filter((u) => !cur.includes(u)); if (add.length) { $('#e_videos').value = [...cur, ...add].join('\n'); n++; } }
       msg.style.color = 'var(--ok)';
       msg.textContent = n ? `${n}개 항목이 입력되었습니다. 내용을 확인한 후 저장해 주세요.` : '새로 입력할 항목이 없습니다. (이미 입력되어 있거나 파일에서 찾지 못했습니다)';
+      const base = msg.textContent;
+      msg.textContent = base + ' 사진을 찾는 중입니다…';
+      const cands = await photoCandidates(file, r.photos).catch(() => []);
+      msg.textContent = base + (cands.length ? ` 사진 ${cands.length}장을 찾았습니다. 아래에서 추가할 사진을 골라 주세요.` : '');
+      drawPick(cands);
     } catch (e) { msg.style.color = 'var(--danger)'; msg.textContent = e.message; }
     finally { drop.classList.remove('busy'); dropfile.value = ''; }
   };
@@ -723,7 +742,27 @@ function renderEdit(id) {
   };
   drawTags();
   $('#addtag').onclick = () => { const t = $('#newtag').value.trim(); if (t && !tags.includes(t)) tags.push(t); $('#newtag').value = ''; drawTags(); };
-  const drawPrev = () => { $('#photoprev').innerHTML = lines($('#e_photos').value).map((u) => img(u)).join(''); };
+  let newImgs = [];
+  const drawPrev = () => {
+    $('#photoprev').innerHTML = lines($('#e_photos').value).map((u) => img(u)).join('')
+      + newImgs.map((d, i) => `<span class="newimg">${img(d)}<button data-rmimg="${i}" title="빼기"><i class="ti ti-x"></i></button></span>`).join('');
+    $$('[data-rmimg]').forEach((b) => b.onclick = () => { newImgs.splice(+b.dataset.rmimg, 1); drawPrev(); });
+    $('#newimgHint').textContent = newImgs.length ? `파일에서 가져온 사진 ${newImgs.length}장은 저장할 때 함께 업로드됩니다.` : '';
+  };
+  function drawPick(cands) {
+    const box = $('#photoPick');
+    if (!cands.length) { box.innerHTML = ''; return; }
+    const on = new Set(cands.map((_, i) => i));
+    const paint = () => {
+      box.innerHTML = `<div class="card pickcard"><div class="inline" style="margin-bottom:8px"><b>파일에서 찾은 사진</b><span class="hint">클릭하여 선택 · 해제</span>
+        <span style="margin-left:auto" class="inline"><button id="pickNone">닫기</button><button class="primary" id="pickAdd">선택한 사진 ${on.size}장 추가</button></span></div>
+        <div class="pickgrid">${cands.map((d, i) => `<span class="pk ${on.has(i) ? 'on' : ''}" data-pk="${i}">${img(d)}<i class="ti ti-check"></i></span>`).join('')}</div></div>`;
+      $$('[data-pk]', box).forEach((el) => el.onclick = () => { const i = +el.dataset.pk; on.has(i) ? on.delete(i) : on.add(i); paint(); });
+      $('#pickNone').onclick = () => { box.innerHTML = ''; };
+      $('#pickAdd').onclick = () => { newImgs.push(...cands.filter((_, i) => on.has(i))); box.innerHTML = ''; drawPrev(); toast('사진이 추가되었습니다. 저장해야 반영됩니다'); };
+    };
+    paint();
+  }
   $('#e_photos').oninput = drawPrev; drawPrev();
 
   const drawRows = () => {
@@ -792,6 +831,12 @@ function renderEdit(id) {
     const priv = { phone: $('#e_phone').value.trim(), email: $('#e_email').value.trim(), stages: Object.fromEntries(valid.filter((r) => r.stage).map((r) => [r.workId, r.stage])) };
     const btn = $('#save'); btn.disabled = true; btn.textContent = '저장 중…';
     try {
+      for (const d of newImgs) {
+        const ref = await addDoc(collection(db, 'images'), { data: d, by: S.user.uid, createdAt: serverTimestamp() });
+        imgCache.set(ref.id, Promise.resolve(d));
+        data.photos.push('msimg:' + ref.id);
+      }
+      newImgs = [];
       let pid = id;
       if (editing) {
         await updateDoc(doc(db, 'profiles', id), { ...data, editCount: increment(1) });
@@ -824,7 +869,8 @@ const AI_PROMPT = `다음은 한국 배우의 프로필 자료입니다. 자료�
 - youtube: 유튜브 채널 주소 (개별 영상 주소는 제외)
 - videos: 개별 출연 영상 주소 배열
 - filmo: 출연작·필모그래피 전체. 원문 순서와 분류 제목(영화/드라마/광고 등)을 유지하고 항목마다 줄바꿈
-- intro: 자기소개 등 위에 해당하지 않는 소개 문장`;
+- intro: 자기소개 등 위에 해당하지 않는 소개 문장
+- photos: 자료 속 배우 인물 사진(얼굴이 보이는 사진)의 위치 목록. 각 항목은 {"page": 페이지 번호(1부터, 이미지 한 장이면 1), "box": [ymin, xmin, ymax, xmax]} 형식이며 좌표는 0~1000으로 정규화. 로고, 아이콘, 글자 영역은 제외`;
 
 async function getAI() {
   if (S.ai) return S.ai;
@@ -903,12 +949,67 @@ async function analyzeFile(file, onStatus = () => {}) {
   try { return JSON.parse(text); } catch (e) { throw new Error('분석 결과를 해석하지 못했습니다. 다시 시도해 주세요.'); }
 }
 
+/* ---------- 파일 속 사진 추출 ---------- */
+function toJpeg(src, sx = 0, sy = 0, sw = src.width, sh = src.height) {
+  const k = Math.min(1, 1000 / Math.max(sw, sh));
+  const c = document.createElement('canvas'); c.width = Math.round(sw * k); c.height = Math.round(sh * k);
+  c.getContext('2d').drawImage(src, sx, sy, sw, sh, 0, 0, c.width, c.height);
+  let q = 0.85, out = c.toDataURL('image/jpeg', q);
+  while (out.length > 850000 && q > 0.4) { q -= 0.1; out = c.toDataURL('image/jpeg', q); }
+  return out;
+}
+const loadImageEl = (blob) => new Promise((res, rej) => { const u = URL.createObjectURL(blob); const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = u; });
+function cropBoxes(src, boxes) {
+  const W = src.width, H = src.height, out = [];
+  for (const b of boxes) {
+    const [y0, x0, y1, x1] = (b.box || []).map(Number); if ([y0, x0, y1, x1].some((v) => !Number.isFinite(v))) continue;
+    const pad = 8;
+    const sx = Math.max(0, (Math.min(x0, x1) - pad) / 1000 * W), sy = Math.max(0, (Math.min(y0, y1) - pad) / 1000 * H);
+    const sw = Math.min(W, (Math.max(x0, x1) + pad) / 1000 * W) - sx, sh = Math.min(H, (Math.max(y0, y1) + pad) / 1000 * H) - sy;
+    if (sw < 120 || sh < 120) continue;
+    out.push(toJpeg(src, sx, sy, sw, sh));
+  }
+  return out;
+}
+async function photoCandidates(file, boxes) {
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  boxes = Array.isArray(boxes) ? boxes : [];
+  let out = [];
+  if (ext === 'pptx') {
+    const JSZip = (await import('https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm')).default;
+    const zip = await JSZip.loadAsync(file);
+    const media = Object.keys(zip.files).filter((x) => /^ppt\/media\/.+\.(png|jpe?g|webp)$/i.test(x));
+    for (const m of media) {
+      try { const im = await loadImageEl(await zip.file(m).async('blob')); if (Math.min(im.width, im.height) >= 300) out.push(toJpeg(im)); } catch (e) { /* 건너뜀 */ }
+    }
+  } else if (['jpg', 'jpeg', 'png', 'webp'].includes(ext)) {
+    const im = await loadImageEl(file);
+    out = boxes.length ? cropBoxes(im, boxes) : [toJpeg(im)];
+  } else if (ext === 'pdf' && boxes.length) {
+    const pdfjs = await import('https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.min.mjs');
+    pdfjs.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/pdf.worker.min.mjs';
+    const pdf = await pdfjs.getDocument({ data: new Uint8Array(await file.arrayBuffer()) }).promise;
+    const pages = [...new Set(boxes.map((b) => +b.page || 1))].filter((n) => n >= 1 && n <= pdf.numPages);
+    for (const n of pages) {
+      const page = await pdf.getPage(n);
+      const v1 = page.getViewport({ scale: 1 });
+      const vp = page.getViewport({ scale: Math.min(4, 2200 / Math.max(v1.width, v1.height)) });
+      const c = document.createElement('canvas'); c.width = vp.width; c.height = vp.height;
+      await page.render({ canvasContext: c.getContext('2d'), viewport: vp }).promise;
+      out.push(...cropBoxes(c, boxes.filter((b) => (+b.page || 1) === n)));
+    }
+  }
+  return out.slice(0, 16);
+}
+
 async function deleteProfileDeep(id) {
   for (const sub of ['ratings', 'comments']) {
     const snap = await getDocs(collection(db, 'profiles', id, sub)).catch(() => null);
     if (snap) for (const d of snap.docs) await deleteDoc(d.ref).catch(() => {});
   }
   await deleteDoc(doc(db, 'profiles', id, 'private', 'info')).catch(() => {});
+  const prof = S.profiles.find((x) => x.id === id);
+  for (const u of prof?.photos || []) if (String(u).startsWith('msimg:')) await deleteDoc(doc(db, 'images', u.slice(6))).catch(() => {});
   await deleteDoc(doc(db, 'profiles', id));
 }
 
