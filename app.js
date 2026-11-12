@@ -684,7 +684,11 @@ function renderEdit(id) {
     drop.classList.add('busy'); msg.style.color = 'var(--sub)';
     msg.innerHTML = `<i class="ti ti-loader-2 spin"></i> ${esc(file.name)} 분석 중입니다. 시간이 많이 소요됩니다. AI 서버 환경에 따라 실패하거나, 오류가 발생할 수 있습니다.`;
     try {
-      const r = await analyzeFile(file);
+      const t0 = Date.now(); let stat = '파일 읽는 중';
+      const paint = () => { msg.innerHTML = `<i class="ti ti-loader-2 spin"></i> ${esc(file.name)} · ${esc(stat)} · ${Math.round((Date.now() - t0) / 1000)}초 경과<br>시간이 많이 소요됩니다. AI 서버 환경에 따라 실패하거나, 오류가 발생할 수 있습니다.`; };
+      paint(); const tick = setInterval(paint, 1000);
+      let r;
+      try { r = await analyzeFile(file, (t) => { stat = t; paint(); }); } finally { clearInterval(tick); }
       const map = { name: 'e_name', birthYear: 'e_birth', height: 'e_height', weight: 'e_weight', specialty: 'e_spec', phone: 'e_phone', email: 'e_email', insta: 'e_insta', youtube: 'e_yt', filmo: 'e_filmo', intro: 'e_intro' };
       let n = 0;
       for (const [k, idv] of Object.entries(map)) {
@@ -860,21 +864,24 @@ async function fileToParts(file) {
   throw new Error('지원하지 않는 파일 형식입니다. PDF, PPTX, 이미지 파일을 올려 주세요.');
 }
 
-async function analyzeFile(file) {
+async function analyzeFile(file, onStatus = () => {}) {
   const ai = await getAI();
   if (!ai?.key) throw new Error('Gemini API 키가 등록되지 않았습니다. 관리자가 마이페이지 > AI 설정에서 등록해야 합니다.');
   const parts = await fileToParts(file);
   const body = JSON.stringify({ contents: [{ role: 'user', parts: [...parts, { text: AI_PROMPT }] }], generationConfig: { responseMimeType: 'application/json' } });
-  const models = [...new Set([ai.model || 'gemini-flash-latest', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-flash-lite-latest'])];
+  const models = [...new Set(['gemini-flash-lite-latest', ai.model || 'gemini-flash-latest', 'gemini-3.5-flash-lite', 'gemini-3.6-flash', 'gemini-3.5-flash'])];
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   let j = null, lastErr = '';
   let alive = [...models];
   outer: for (let round = 0; round < 3; round++) {
-    if (round) await wait(2000 * round);
+    if (round) { onStatus(`모든 모델이 혼잡하여 ${2 * round}초 후 다시 시도합니다 (${round + 1}/3회차)`); await wait(2000 * round); }
     for (const m of [...alive]) {
+      onStatus(`${m} 모델로 분석 중 (${round + 1}/3회차)`);
+      const ctl = new AbortController(); const to = setTimeout(() => ctl.abort(), 90000);
       const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(m)}:generateContent`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': ai.key }, body,
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-goog-api-key': ai.key }, body, signal: ctl.signal,
       }).catch(() => null);
+      clearTimeout(to);
       const data = res ? await res.json().catch(() => ({})) : {};
       if (res && res.ok) { j = data; break outer; }
       lastErr = data.error?.message || (res ? res.status : '네트워크 오류');
