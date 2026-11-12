@@ -1082,10 +1082,10 @@ async function renderMe(tab) {
     $('#mpw').onclick = async () => { await sendPasswordResetEmail(auth, S.me.email); toast('재설정 메일을 발송했습니다'); };
   } else if (tab === 'favs') {
     const list = S.profiles.filter((p) => S.favs.has(p.id)).sort((a, b) => (b.featured ? 1 : 0) - (a.featured ? 1 : 0) || a.name.localeCompare(b.name, 'ko'));
-    body.innerHTML = list.map(rowHTML).join('') || '<div class="empty">즐겨찾기한 배우가 없습니다. 목록에서 ☆를 눌러 추가할 수 있습니다.</div>';
+    body.innerHTML = list.map((p) => rowHTML(p)).join('') || '<div class="empty">즐겨찾기한 배우가 없습니다. 목록에서 ☆를 눌러 추가할 수 있습니다.</div>';
   } else if (tab === 'mine') {
     const list = S.profiles.filter((p) => p.createdBy === S.user.uid).sort((a, b) => ms(b.createdAt) - ms(a.createdAt));
-    body.innerHTML = list.map(rowHTML).join('') || '<div class="empty">등록한 프로필이 없습니다.</div>';
+    body.innerHTML = list.map((p) => rowHTML(p)).join('') || '<div class="empty">등록한 프로필이 없습니다.</div>';
   } else if (tab === 'comments') {
     body.innerHTML = '<div class="loading">불러오는 중…</div>';
     try {
