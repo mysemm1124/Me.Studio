@@ -5,6 +5,7 @@ import { firebaseConfig } from "./firebase-config.js";
 
 const fb = initializeApp(firebaseConfig);
 const auth = getAuth(fb);
+auth.languageCode = 'ko';
 const db = initializeFirestore(fb, { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) });
 
 /* ---------- 기본값 ---------- */
@@ -113,6 +114,7 @@ async function boot() {
   S.loaded = true;
   if (!shown) startRoute();
   else if (!/^#\/(new|edit)/.test(location.hash)) route(true);
+  maybeShowGuide();
 }
 function startRoute() {
   if (S.pendingImport && isProducer() && location.hash !== '#/new') location.hash = '#/new';
@@ -1060,7 +1062,7 @@ function renderWork(wid) {
 
 /* ---------- 마이페이지 ---------- */
 async function renderMe(tab) {
-  const tabs = [['info', '내 정보'], ['favs', '즐겨찾기'], ...(isProducer() ? [['mine', '내가 등록한 프로필'], ['comments', '내 댓글'], ['bookmarklet', '필름메이커스 담기 버튼']] : []), ...(isOwner() ? [['members', '회원 관리'], ['ai', 'AI 설정']] : [])];
+  const tabs = [['info', '내 정보'], ['favs', '즐겨찾기'], ...(isProducer() ? [['mine', '내가 등록한 프로필'], ['comments', '내 댓글'], ['bookmarklet', '필름메이커스 담기 버튼']] : []), ...(isOwner() ? [['members', '회원 관리'], ['ai', 'AI 설정']] : []), ['help', '도움말']];
   if (!tabs.some(([k]) => k === tab)) tab = 'info';
   view().innerHTML = `<div class="tabs">${tabs.map(([k, v]) => `<a href="#/me/${k}" class="${k === tab ? 'on' : ''}">${v}${k === 'members' && S.newMembers ? '<span class="dot"></span>' : ''}</a>`).join('')}</div><div id="tabbody"></div>`;
   const body = $('#tabbody');
@@ -1094,9 +1096,11 @@ async function renderMe(tab) {
       const link = (e.message.match(/https:\/\/console\.firebase\.google\.com\S+/) || [])[0];
       body.innerHTML = `<div class="card">최초 1회 Firestore 색인 생성이 필요합니다.${link ? ` <a href="${esc(link)}" target="_blank" rel="noopener">색인 만들기</a> 후 몇 분 뒤 새로고침해 주세요.` : `<div class="err">${esc(e.message)}</div>`}</div>`;
     }
+  } else if (tab === 'help') {
+    body.innerHTML = `<div class="card guide" style="max-width:760px">${guideBasic()}${isProducer() ? '<hr>' + guideProducer() : ''}${isOwner() ? '<hr>' + guideOwner() : ''}</div>`;
+    bindBm(body);
   } else if (tab === 'bookmarklet') {
-    const site = location.origin + location.pathname;
-    const code = `javascript:${encodeURIComponent(`(${bookmarklet.toString()})(${JSON.stringify(site)})`)}`;
+    const code = bmCode();
     body.innerHTML = `<div class="card" style="max-width:640px">
       <div class="h2">필름메이커스 담기 버튼</div>
       <p>아래 버튼을 즐겨찾기 막대로 끌어다 놓으면 설치가 완료됩니다. 필름메이커스 배우 프로필에서 이 버튼을 누르면 정보가 Me.Studio 등록 화면으로 전달됩니다.</p>
@@ -1136,6 +1140,84 @@ async function renderMe(tab) {
       $$('.tabs .dot').forEach((d) => d.remove());
     }
   }
+}
+
+/* ---------- 이용 안내 ---------- */
+const bmCode = () => `javascript:${encodeURIComponent(`(${bookmarklet.toString()})(${JSON.stringify(location.origin + location.pathname)})`)}`;
+const bindBm = (root) => $$('.bm', root).forEach((a) => { a.onclick = (e) => { e.preventDefault(); toast('클릭하지 말고 즐겨찾기 막대로 끌어다 놓아 주세요'); }; });
+
+function guideBasic() {
+  return `<h3><i class="ti ti-movie"></i> Me.Studio 이용 안내</h3>
+  <p>Me.Studio는 연출자들이 공개된 배우 프로필을 모아 함께 참고하는 <b>비공개 아카이브</b>입니다. 사이트 안의 정보는 외부에 공유하지 말아 주세요.</p>
+  <h4>회원 등급</h4>
+  <ul><li><b>방문자</b> · 프로필 열람과 즐겨찾기를 이용할 수 있습니다.</li>
+  <li><b>제작자</b> · 프로필 등록·수정, 코멘트와 만족도 작성, 비공개 프로필 열람이 가능합니다.</li>
+  <li>제작자 권한이 필요하면 관리자에게 요청해 주세요.</li></ul>
+  <h4>목록 보기</h4>
+  <ul><li>왼쪽 필터로 성별·나이·키·이미지·작품 등을 골라 찾을 수 있습니다.</li>
+  <li>☆를 누르면 즐겨찾기에 추가되며, 마이페이지 &gt; 즐겨찾기에서 모아 볼 수 있습니다.</li>
+  <li><span class="crown"><i class="ti ti-crown"></i>추천</span> 표시는 관리자 추천 배우이며, 검색 결과 상단에 표시됩니다.</li></ul>
+  <h4>프로필 보기</h4>
+  <ul><li>지원 및 수집 경로의 작품 카드에 마우스를 올리면 배역 정보가 표시되고, 누르면 해당 작품의 캐스팅 보드로 이동합니다.</li>
+  <li>필름메이커스·인스타그램·유튜브 버튼으로 원본 페이지에 바로 이동할 수 있습니다.</li></ul>`;
+}
+function guideProducer() {
+  return `<h3><i class="ti ti-user-plus"></i> 제작자 이용 안내</h3>
+  <h4>1. 필름메이커스 담기 버튼 설치</h4>
+  <p>필름메이커스 배우 프로필을 클릭 한 번으로 등록하는 버튼입니다. 처음 한 번만 설치하면 됩니다.</p>
+  <ol><li>브라우저의 즐겨찾기 막대를 켭니다.<br><span class="hint">사파리: 상단 메뉴 보기 → 즐겨찾기 막대 보기 (⌘⇧B) · 크롬: ⋮ → 북마크 → 북마크바 표시 (⌘⇧B)</span></li>
+  <li>아래 버튼을 마우스로 끌어 즐겨찾기 막대에 놓습니다.<div style="margin:10px 0"><a class="bm" href="${esc(bmCode())}">Me.Studio에 담기</a></div></li>
+  <li>필름메이커스 배우 프로필 페이지에서 설치한 버튼을 누르면, Me.Studio 등록 화면이 열리며 정보가 자동으로 입력됩니다.</li></ol>
+  <ul class="hint"><li>처음 누를 때 팝업 허용을 묻는다면 허용해 주세요.</li>
+  <li>필름메이커스에 로그인한 상태여야 첨부된 프로필 파일까지 함께 분석됩니다.</li>
+  <li>전화번호는 필름메이커스에서 '전화번호 보기'를 먼저 눌러야 함께 저장됩니다.</li>
+  <li>사이트가 업데이트되면 버튼을 다시 설치해야 할 수 있습니다. 마이페이지 &gt; 도움말에서 언제든 다시 설치할 수 있습니다.</li></ul>
+  <h4>2. 프로필 등록 방법</h4>
+  <ul><li><b>필름메이커스</b> · 담기 버튼 사용</li>
+  <li><b>프로필 파일</b> · 등록 화면 맨 위에 PDF·PPTX·이미지를 끌어다 놓으면 AI가 내용을 읽어 빈칸을 채우고, 파일 속 사진도 골라서 추가할 수 있습니다.</li>
+  <li><b>직접 입력</b> · 위 두 방법이 어려울 때 사용합니다.</li>
+  <li>AI 분석은 틀릴 수 있으니 저장 전에 내용을 꼭 확인해 주세요.</li></ul>
+  <h4>3. 작품 연결</h4>
+  <ul><li>프로필을 작품과 연결하면 어떤 작품을 준비하며 지원받았거나 직접 고른 배우인지 기록됩니다.</li>
+  <li>작품과 배역은 한 번 만들어 두면 이후에는 목록에서 고르기만 하면 됩니다.</li>
+  <li>'직접 선택'일 때는 이미지·연기 등 매력 포인트를 함께 남길 수 있습니다.</li>
+  <li>진행 단계(서류 탈락·미팅·최종 캐스팅)는 제작자끼리만 볼 수 있습니다.</li></ul>
+  <h4>4. 코멘트와 만족도</h4>
+  <ul><li><b>코멘트</b> · 자유로운 메모입니다. '제작자만 보기'를 선택하면 방문자에게 표시되지 않습니다.</li>
+  <li><b>만족도</b> · 실제로 함께 작업한 경우에만 남겨 주세요.</li>
+  <li>연락처는 제작자 이상에게만 표시됩니다.</li></ul>
+  <h4>5. 사진 정리</h4>
+  <ul><li>상세 화면에서 다른 사진을 누르고 '대표 사진으로 지정'을 선택하면 대표 사진이 바뀝니다.</li>
+  <li>'대표 사진 위치 조정'으로 목록에서 얼굴이 잘 보이도록 위치를 맞출 수 있습니다.</li></ul>`;
+}
+function guideOwner() {
+  return `<h3><i class="ti ti-shield"></i> 관리자 기능</h3>
+  <ul><li><b>회원 관리</b> · 신규 가입자가 있으면 마이페이지에 빨간 점이 표시됩니다. 소속을 확인한 후 권한을 지정해 주세요.</li>
+  <li><b>선택 모드</b> · 목록의 '선택' 버튼으로 여러 프로필을 한 번에 삭제·비공개·추천 처리할 수 있습니다.</li>
+  <li><b>추천</b> · 상세 화면의 추천 버튼으로 지정하며, 모든 회원에게 표시됩니다.</li>
+  <li><b>AI 설정</b> · 프로필 파일 분석에 쓰이는 Gemini API 키를 관리합니다.</li></ul>`;
+}
+
+function maybeShowGuide() {
+  if (!S.me || document.getElementById('guideModal')) return;
+  const seen = S.me.guideSeen || {};
+  const needBasic = !seen.basic, needProd = isProducer() && !seen.producer;
+  if (!needBasic && !needProd) return;
+  const wrap = document.createElement('div');
+  wrap.id = 'guideModal'; wrap.className = 'modal-bg';
+  wrap.innerHTML = `<div class="modal"><div class="guide">${needBasic ? guideBasic() : ''}${needBasic && needProd ? '<hr>' : ''}${needProd ? guideProducer() : ''}</div>
+    <div class="modal-foot"><label class="inline hint"><input type="checkbox" id="gNever" style="width:auto"> 다시 보지 않기</label>
+    <span class="hint" style="margin-left:auto">마이페이지 &gt; 도움말에서 다시 볼 수 있습니다</span><button class="primary" id="gClose">확인</button></div></div>`;
+  document.body.appendChild(wrap);
+  bindBm(wrap);
+  $('#gClose').onclick = async () => {
+    if ($('#gNever').checked) {
+      const g = { ...seen, basic: true, ...(isProducer() ? { producer: true } : {}) };
+      S.me.guideSeen = g;
+      updateDoc(doc(db, 'users', S.user.uid), { guideSeen: g }).catch(() => {});
+    } else S.me.guideSeen = { ...seen, _session: true };
+    wrap.remove();
+  };
 }
 
 /* ---------- 북마클릿에서 넘어온 데이터 받기 ---------- */
