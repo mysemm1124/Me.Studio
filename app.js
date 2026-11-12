@@ -1,11 +1,11 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signInWithPopup, GoogleAuthProvider, signOut, sendPasswordResetEmail } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { getFirestore, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, addDoc, collection, collectionGroup, query, where, serverTimestamp, writeBatch, increment, arrayUnion, arrayRemove } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, getDocsFromCache, getDocFromCache, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, addDoc, collection, collectionGroup, query, where, serverTimestamp, writeBatch, increment, arrayUnion, arrayRemove } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import { firebaseConfig } from "./firebase-config.js";
 
 const fb = initializeApp(firebaseConfig);
 const auth = getAuth(fb);
-const db = getFirestore(fb);
+const db = initializeFirestore(fb, { localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }) });
 
 /* ---------- 기본값 ---------- */
 const IMAGE_TAGS = ['강아지상', '고양이상', '여우상', '두부상', '토끼상', '곰상', '사슴상', '늑대상'];
@@ -38,23 +38,28 @@ const work = (id) => S.works.find((w) => w.id === id);
 const workTitle = (id) => work(id)?.title || '';
 const CROWN = '<span class="crown" title="관리자 추천"><i class="ti ti-crown"></i>추천</span>';
 const img = (src, attrs = '') => `<img src="${esc(src)}" referrerpolicy="no-referrer" loading="lazy" ${attrs}>`;
+const posOf = (p) => p?.coverPos ? `${p.coverPos.x}% ${p.coverPos.y}%` : '50% 25%';
+const coverImg = (p) => img(p.photos[0], `style="object-position:${posOf(p)}"`);
 const ytId = (u) => { const m = String(u).match(/(?:youtu\.be\/|v=|shorts\/|embed\/)([\w-]{11})/); return m ? m[1] : null; };
 const instaUrl = (v) => (!v ? '' : /^https?:/.test(v) ? v : `https://www.instagram.com/${v.replace(/^@/, '')}`);
 function toast(msg) { const t = document.createElement('div'); t.textContent = msg; Object.assign(t.style, { position: 'fixed', bottom: '20px', left: '50%', transform: 'translateX(-50%)', background: '#262624', color: '#fff', padding: '8px 14px', borderRadius: '8px', fontSize: '13px', zIndex: 99 }); document.body.appendChild(t); setTimeout(() => t.remove(), 2200); }
 
 /* ---------- 데이터 ---------- */
-async function loadAll() {
+async function loadAll(fromCache = false) {
+  const gDocs = fromCache ? getDocsFromCache : getDocs;
+  const gDoc = fromCache ? getDocFromCache : getDoc;
   const pq = isProducer() ? collection(db, 'profiles') : query(collection(db, 'profiles'), where('hidden', '==', false));
-  const [ps, ws, fv] = await Promise.all([getDocs(pq), getDocs(collection(db, 'works')), getDoc(doc(db, 'favorites', S.user.uid))]);
-  S.profiles = ps.docs.map((d) => ({ id: d.id, ...d.data() }));
-  S.works = ws.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => a.title.localeCompare(b.title, 'ko'));
-  S.favs = new Set(fv.exists() ? fv.data().ids || [] : []);
+  const [ps, ws, fv] = await Promise.all([gDocs(pq), gDocs(collection(db, 'works')), gDoc(doc(db, 'favorites', S.user.uid)).catch(() => null)]);
+  const profiles = ps.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const works = ws.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => a.title.localeCompare(b.title, 'ko'));
+  const privates = {};
   if (isProducer()) {
-    const pv = await Promise.all(S.profiles.map((p) => getDoc(doc(db, 'profiles', p.id, 'private', 'info'))));
-    S.privates = {};
-    pv.forEach((d, i) => { S.privates[S.profiles[i].id] = d.exists() ? d.data() : {}; });
+    const pv = await Promise.allSettled(profiles.map((p) => gDoc(doc(db, 'profiles', p.id, 'private', 'info'))));
+    pv.forEach((r, i) => { privates[profiles[i].id] = r.status === 'fulfilled' && r.value.exists() ? r.value.data() : {}; });
   }
-  S.loaded = true;
+  S.profiles = profiles; S.works = works; S.privates = privates;
+  S.favs = new Set(fv && fv.exists() ? fv.data().ids || [] : []);
+  return profiles.length + works.length;
 }
 const allTags = () => [...new Set([...IMAGE_TAGS, ...S.profiles.flatMap((p) => p.imageTags || [])])];
 const allReasons = () => [...new Set([...REASONS, ...S.profiles.flatMap((p) => (p.works || []).flatMap((w) => w.reasons || []))])];
@@ -73,11 +78,26 @@ async function boot() {
   S.me = snap.data();
   renderNav();
   if (S.me.role === 'banned') { view().innerHTML = '<div class="card narrow">이용이 제한된 계정입니다. 관리자에게 문의해 주세요.</div>'; return; }
-  try { await loadAll(); } catch (e) { view().innerHTML = `<div class="card narrow">데이터를 불러오지 못했습니다.<div class="err">${esc(e.message)}</div></div>`; return; }
   const saved = sessionStorage.getItem('mestudio-import');
   if (saved && !S.pendingImport) { S.pendingImport = JSON.parse(saved); }
-  if (S.pendingImport && isProducer()) location.hash = '#/new';
-  route();
+  let shown = false;
+  try { if (await loadAll(true)) { S.loaded = true; shown = true; startRoute(); } } catch (e) { /* 캐시 없음 */ }
+  const slow = setTimeout(() => { if (!shown) view().innerHTML = '<div class="loading">서버 연결이 지연되고 있습니다. 잠시만 기다려 주세요.<br><button onclick="location.reload()" style="margin-top:12px">새로고침</button></div>'; }, 8000);
+  try { await loadAll(false); }
+  catch (e) {
+    clearTimeout(slow);
+    if (!shown) view().innerHTML = `<div class="card narrow">데이터를 불러오지 못했습니다.<div class="err">${esc(e.message)}</div><button onclick="location.reload()" style="margin-top:10px">새로고침</button></div>`;
+    else toast('최신 데이터를 불러오지 못해 저장된 데이터로 표시 중입니다');
+    return;
+  }
+  clearTimeout(slow);
+  S.loaded = true;
+  if (!shown) startRoute();
+  else if (!/^#\/(new|edit)/.test(location.hash)) route(true);
+}
+function startRoute() {
+  if (S.pendingImport && isProducer() && location.hash !== '#/new') location.hash = '#/new';
+  else route();
 }
 
 function renderNav() {
@@ -187,10 +207,12 @@ function renderAuth(mode) {
 
 /* ---------- 라우터 ---------- */
 window.addEventListener('hashchange', () => S.loaded && route());
-function route() {
+function route(keepScroll) {
   const h = location.hash.replace(/^#\/?/, '');
   const [a, b, c] = h.split('/');
-  window.scrollTo(0, 0);
+  const y = window.scrollY;
+  if (!keepScroll) window.scrollTo(0, 0);
+  else requestAnimationFrame(() => window.scrollTo(0, y));
   if (a === 'p' && b) return renderDetail(b);
   if (a === 'new') return isProducer() ? renderEdit(null) : renderNoAuth();
   if (a === 'edit' && b) return isProducer() ? renderEdit(b) : renderNoAuth();
@@ -233,7 +255,7 @@ function score(p, q) {
     if ((p.imageTags || []).some((x) => x.toLowerCase().includes(t))) s += 20;
     if ((p.specialty || '').toLowerCase().includes(t)) s += 15;
     if (wt.includes(t)) s += 12;
-    if ((p.filmo || '').toLowerCase().includes(t)) s += 8;
+    if ((p.filmo || '').toLowerCase().includes(t) || (p.intro || '').toLowerCase().includes(t)) s += 8;
     if (!s) return -1;
     total += s;
   }
@@ -278,7 +300,7 @@ function rowHTML(p) {
   const r = p.ratingSummary || {};
   const meta = [p.height && `${p.height}cm`, p.weight && `${p.weight}kg`, p.specialty].filter(Boolean).join(' · ');
   return `<div class="row ${p.featured ? 'feat' : ''}" data-go="#/p/${p.id}">
-    <div class="thumb">${p.photos?.[0] ? img(p.photos[0]) : '<i class="ti ti-user"></i>'}</div>
+    <div class="thumb">${p.photos?.[0] ? coverImg(p) : '<i class="ti ti-user"></i>'}</div>
     <div class="row-main">
       <div class="row-top"><span class="nm">${esc(p.name)}</span>${p.featured ? CROWN : ''}${p.hidden ? '<span class="lock-badge"><i class="ti ti-lock"></i>방문자 비공개</span>' : ''}<span class="sub">${esc([p.gender, ag].filter(Boolean).join(' · '))}</span></div>
       ${meta ? `<div class="row-meta">${esc(meta)}</div>` : ''}
@@ -366,7 +388,12 @@ async function renderDetail(id) {
   view().innerHTML = `
     <div class="dtop">
       <div>
-        <div class="mainphoto" id="mainphoto">${photos[0] ? img(photos[0]) : '<i class="ti ti-user"></i>'}</div>
+        <div class="mainphoto" id="mainphoto">${photos[0] ? coverImg(p) : '<i class="ti ti-user"></i>'}</div>
+        ${isProducer() && photos[0] ? `<div class="phctl"><button id="setCover" class="ghost" style="display:none"><i class="ti ti-photo-check"></i> 대표 사진으로 지정</button><button id="adjCover" class="ghost"><i class="ti ti-arrows-move"></i> 대표 사진 위치 조정</button></div>
+        <div id="adjPanel" class="card" style="display:none;margin-top:6px;padding:10px 12px">
+          <label class="f" style="margin-top:0">가로 위치</label><input type="range" id="posX" min="0" max="100" step="1" value="${p.coverPos?.x ?? 50}" style="padding:0">
+          <label class="f">세로 위치</label><input type="range" id="posY" min="0" max="100" step="1" value="${p.coverPos?.y ?? 25}" style="padding:0">
+          <div class="inline" style="margin-top:8px;justify-content:flex-end"><button id="posCancel">취소</button><button class="primary" id="posSave">저장</button></div></div>` : ''}
         ${photos.length > 1 ? `<div class="thumbs">${photos.map((u, i) => img(u, `data-i="${i}" class="${i === 0 ? 'on' : ''} ${i >= 10 ? 'more' : ''}"`)).join('')}</div>
         ${photos.length > 10 ? `<button id="morePh" class="ghost" style="width:100%;margin-top:6px;font-size:13px;color:var(--sub)">사진 ${photos.length - 10}장 더보기</button>` : ''}` : ''}
       </div>
@@ -399,14 +426,36 @@ async function renderDetail(id) {
     </div>
     ${vids ? `<div class="sec"><div class="h2"><i class="ti ti-player-play"></i>출연영상</div><div class="vids">${vids}</div></div>` : ''}
     ${p.filmo ? `<div class="sec"><details><summary>참여작품</summary><div class="filmo">${esc(p.filmo)}</div></details></div>` : ''}
+    ${p.intro ? `<div class="sec"><details><summary>프로필 본문</summary><div class="filmo">${esc(p.intro)}</div></details></div>` : ''}
       </div>
     </div>`;
 
+  let cur = 0;
   $$('.thumbs img').forEach((t) => t.onclick = () => {
-    $('#mainphoto').innerHTML = img(photos[t.dataset.i]);
+    cur = +t.dataset.i;
+    $('#mainphoto').innerHTML = cur === 0 ? coverImg(p) : img(photos[cur]);
     $$('.thumbs img').forEach((x) => x.classList.remove('on')); t.classList.add('on');
+    if ($('#setCover')) { $('#setCover').style.display = cur === 0 ? 'none' : ''; $('#adjCover').style.display = cur === 0 ? '' : 'none'; $('#adjPanel').style.display = 'none'; }
     bindMain();
   });
+  if ($('#setCover')) {
+    $('#setCover').onclick = async () => {
+      const next = [photos[cur], ...photos.filter((_, i) => i !== cur)];
+      try { await updateDoc(doc(db, 'profiles', id), { photos: next, coverPos: null }); }
+      catch (e) { return toast('변경에 실패했습니다: ' + e.message); }
+      p.photos = next; p.coverPos = null; toast('대표 사진이 변경되었습니다'); renderDetail(id);
+    };
+    const preview = () => { const m = $('#mainphoto img'); if (m) m.style.objectPosition = `${$('#posX').value}% ${$('#posY').value}%`; };
+    $('#adjCover').onclick = () => { $('#adjPanel').style.display = $('#adjPanel').style.display === 'none' ? '' : 'none'; };
+    $('#posX').oninput = preview; $('#posY').oninput = preview;
+    $('#posCancel').onclick = () => { $('#adjPanel').style.display = 'none'; $('#mainphoto img').style.objectPosition = posOf(p); };
+    $('#posSave').onclick = async () => {
+      const coverPos = { x: +$('#posX').value, y: +$('#posY').value };
+      try { await updateDoc(doc(db, 'profiles', id), { coverPos }); }
+      catch (e) { return toast('저장에 실패했습니다: ' + e.message); }
+      p.coverPos = coverPos; $('#adjPanel').style.display = 'none'; toast('대표 사진 위치가 저장되었습니다');
+    };
+  }
   if ($('#morePh')) $('#morePh').onclick = () => {
     const open = $('.thumbs').classList.toggle('all');
     $('#morePh').textContent = open ? '사진 접기' : `사진 ${photos.length - 10}장 더보기`;
@@ -423,7 +472,9 @@ async function renderDetail(id) {
 
 async function loadRatings(p) {
   const sec = $('#rateSec'); if (!sec) return;
-  const snap = await getDocs(collection(db, 'profiles', p.id, 'ratings'));
+  let snap;
+  try { snap = await getDocs(collection(db, 'profiles', p.id, 'ratings')); }
+  catch (e) { sec.innerHTML = `<div class="h2"><i class="ti ti-mood-smile"></i>작업 만족도</div><div class="err">평가를 불러오지 못했습니다. ${esc(e.message)}</div>`; return; }
   const rs = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => ms(b.createdAt) - ms(a.createdAt));
   const sum = { good: 0, soso: 0, bad: 0 }; rs.forEach((r) => sum[r.value]++);
   const linkedWorks = new Set((p.works || []).map((w) => w.workId));
@@ -518,6 +569,13 @@ function renderEdit(id) {
     ${imp ? `<div class="importbar"><b>필름메이커스에서 정보를 불러왔습니다.</b> 내용을 확인한 후 저장해 주세요. <button id="dropImp" class="ghost">불러온 내용 버리기</button>
       ${dup ? `<div style="margin-top:6px">이미 등록된 배우입니다 → <a href="#/p/${dup.id}">${esc(dup.name)} 프로필 보기</a></div>` : ''}</div>` : ''}
     <div class="h1">${editing ? '프로필 수정' : '프로필 등록'}</div>
+    <div class="drop" id="drop">
+      <i class="ti ti-file-upload" style="font-size:26px"></i>
+      <div><b>프로필 파일로 자동 입력</b>
+      <div class="hint">PDF, PPTX, 이미지 파일을 끌어다 놓거나 클릭하여 선택해 주세요. 비어 있는 칸만 채워지며, 이미 입력된 내용은 유지됩니다.</div></div>
+      <input type="file" id="dropfile" accept=".pdf,.pptx,.jpg,.jpeg,.png,.webp" hidden>
+    </div>
+    <div id="dropmsg" class="hint" style="margin:-6px 0 12px"></div>
     <div class="card">
       <div class="h2">기본 정보</div>
       <div class="row3">
@@ -551,7 +609,8 @@ function renderEdit(id) {
       <label class="f">사진 주소 (한 줄에 하나, 첫 줄이 대표 사진)</label><textarea id="e_photos">${esc((p.photos || []).join('\n'))}</textarea>
       <div class="prev" id="photoprev"></div>
       <label class="f">출연영상 링크 (한 줄에 하나)</label><textarea id="e_videos" style="min-height:50px">${esc((p.videos || []).join('\n'))}</textarea>
-      <label class="f">참여작품 (원문)</label><textarea id="e_filmo" style="min-height:140px">${esc(p.filmo)}</textarea>
+      <label class="f">참여작품</label><textarea id="e_filmo" style="min-height:140px">${esc(p.filmo)}</textarea>
+      <label class="f">프로필 본문 (자기소개 등)</label><textarea id="e_intro" style="min-height:100px">${esc(p.intro)}</textarea>
     </div>
 
     <div class="card" style="margin-top:14px">
@@ -564,6 +623,34 @@ function renderEdit(id) {
       ${editing && (isOwner() || editing.createdBy === S.user.uid) ? '<button class="danger" id="del" style="margin-right:auto">삭제</button>' : ''}
       <button id="cancel">취소</button><button class="primary" id="save">저장</button>
     </div>`;
+
+  const drop = $('#drop'), dropfile = $('#dropfile');
+  const handleFile = async (file) => {
+    if (!file) return;
+    const msg = $('#dropmsg');
+    drop.classList.add('busy'); msg.style.color = 'var(--sub)';
+    msg.innerHTML = `<i class="ti ti-loader-2 spin"></i> ${esc(file.name)} 분석 중입니다. 10~30초 정도 소요됩니다.`;
+    try {
+      const r = await analyzeFile(file);
+      const map = { name: 'e_name', birthYear: 'e_birth', height: 'e_height', weight: 'e_weight', specialty: 'e_spec', phone: 'e_phone', email: 'e_email', insta: 'e_insta', youtube: 'e_yt', filmo: 'e_filmo', intro: 'e_intro' };
+      let n = 0;
+      for (const [k, idv] of Object.entries(map)) {
+        const v = r[k]; const el = $('#' + idv);
+        if (v != null && String(v).trim() && !el.value.trim()) { el.value = String(v).trim(); n++; }
+      }
+      if ((r.gender === '남' || r.gender === '여') && !$('#e_gender').value) { $('#e_gender').value = r.gender; n++; }
+      const vids = Array.isArray(r.videos) ? r.videos.filter(Boolean) : [];
+      if (vids.length) { const cur = lines($('#e_videos').value); const add = vids.filter((u) => !cur.includes(u)); if (add.length) { $('#e_videos').value = [...cur, ...add].join('\n'); n++; } }
+      msg.style.color = 'var(--ok)';
+      msg.textContent = n ? `${n}개 항목이 입력되었습니다. 내용을 확인한 후 저장해 주세요.` : '새로 입력할 항목이 없습니다. (이미 입력되어 있거나 파일에서 찾지 못했습니다)';
+    } catch (e) { msg.style.color = 'var(--danger)'; msg.textContent = e.message; }
+    finally { drop.classList.remove('busy'); dropfile.value = ''; }
+  };
+  drop.onclick = () => dropfile.click();
+  dropfile.onchange = () => handleFile(dropfile.files[0]);
+  drop.ondragover = (e) => { e.preventDefault(); drop.classList.add('over'); };
+  drop.ondragleave = () => drop.classList.remove('over');
+  drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove('over'); handleFile(e.dataTransfer.files[0]); };
 
   const drawTags = () => {
     const pool = [...new Set([...allTags(), ...tags])];
@@ -634,7 +721,7 @@ function renderEdit(id) {
       name, gender: $('#e_gender').value, birthYear: num($('#e_birth').value), height: num($('#e_height').value), weight: num($('#e_weight').value),
       specialty: $('#e_spec').value.trim(), imageTags: tags, hidden: $('#e_hidden').checked,
       insta: $('#e_insta').value.trim(), youtube: $('#e_yt').value.trim(), fmUrl: $('#e_fm').value.trim(),
-      files: lines($('#e_files').value), photos: lines($('#e_photos').value), videos: lines($('#e_videos').value), filmo: $('#e_filmo').value.trim(),
+      files: lines($('#e_files').value), photos: lines($('#e_photos').value), videos: lines($('#e_videos').value), filmo: $('#e_filmo').value.trim(), intro: $('#e_intro').value.trim(),
       works: valid.map((r) => ({ workId: r.workId, type: r.type || '지원', reasons: r.type === '선택' ? r.reasons || [] : [], roleId: r.roleId || '', by: r.by || S.user.uid, byName: r.byName || S.me.name })),
       updatedAt: serverTimestamp(),
     };
@@ -658,6 +745,83 @@ function renderEdit(id) {
   };
 }
 
+/* ---------- 프로필 파일 분석 (Gemini) ---------- */
+const AI_PROMPT = `다음은 한국 배우의 프로필 자료입니다. 자료에 적힌 정보만 추출하여 JSON 객체 하나로 답하십시오. 자료에 없는 정보는 빈 문자열 "" 또는 null로 두고 절대 추측하지 마십시오.
+필드:
+- name: 이름
+- gender: "남" 또는 "여" (명시되지 않았으면 "")
+- birthYear: 출생년도 4자리 숫자 (나이만 적혀 있으면 null)
+- height: 키(cm) 숫자
+- weight: 체중(kg) 숫자
+- specialty: 특기를 쉼표로 구분한 문자열
+- phone: 전화번호
+- email: 이메일
+- insta: 인스타그램 주소 또는 아이디
+- youtube: 유튜브 채널 주소 (개별 영상 주소는 제외)
+- videos: 개별 출연 영상 주소 배열
+- filmo: 출연작·필모그래피 전체. 원문 순서와 분류 제목(영화/드라마/광고 등)을 유지하고 항목마다 줄바꿈
+- intro: 자기소개 등 위에 해당하지 않는 소개 문장`;
+
+async function getAI() {
+  if (S.ai) return S.ai;
+  const d = await getDoc(doc(db, 'config', 'gemini'));
+  S.ai = d.exists() ? d.data() : null;
+  return S.ai;
+}
+const toB64 = async (blob) => {
+  const buf = new Uint8Array(await blob.arrayBuffer()); let bin = '';
+  for (let i = 0; i < buf.length; i += 0x8000) bin += String.fromCharCode.apply(null, buf.subarray(i, i + 0x8000));
+  return btoa(bin);
+};
+const decodeXml = (t) => t.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&');
+
+async function fileToParts(file) {
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  const imgMime = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp' };
+  if (file.size > 18 * 1024 * 1024) throw new Error('파일이 너무 큽니다. 18MB 이하 파일만 분석할 수 있습니다.');
+  if (ext === 'pdf') return [{ inline_data: { mime_type: 'application/pdf', data: await toB64(file) } }];
+  if (imgMime[ext]) return [{ inline_data: { mime_type: imgMime[ext], data: await toB64(file) } }];
+  if (ext === 'pptx') {
+    const JSZip = (await import('https://cdn.jsdelivr.net/npm/jszip@3.10.1/+esm')).default;
+    const zip = await JSZip.loadAsync(file);
+    const n = (x) => +x.match(/(\d+)\.xml$/)[1];
+    const slides = Object.keys(zip.files).filter((x) => /^ppt\/slides\/slide\d+\.xml$/.test(x)).sort((a, b) => n(a) - n(b));
+    const texts = [];
+    for (const [i, name] of slides.entries()) {
+      const xml = await zip.file(name).async('string');
+      const paras = xml.split('</a:p>').map((pp) => [...pp.matchAll(/<a:t>([^<]*)<\/a:t>/g)].map((m) => decodeXml(m[1])).join('')).filter((t) => t.trim());
+      if (paras.length) texts.push(`[슬라이드 ${i + 1}]\n${paras.join('\n')}`);
+    }
+    const parts = [{ text: texts.join('\n\n') || '(텍스트 없음)' }];
+    let total = 0;
+    const media = Object.keys(zip.files).filter((x) => /^ppt\/media\/.+\.(png|jpe?g)$/i.test(x)).slice(0, 8);
+    for (const m of media) {
+      const b64 = await zip.file(m).async('base64');
+      if (b64.length > 4e6 || total + b64.length > 1.2e7) continue;
+      total += b64.length;
+      parts.push({ inline_data: { mime_type: /png$/i.test(m) ? 'image/png' : 'image/jpeg', data: b64 } });
+    }
+    return parts;
+  }
+  if (ext === 'ppt') throw new Error('예전 PPT 형식은 지원하지 않습니다. PPTX나 PDF로 저장한 후 다시 올려 주세요.');
+  throw new Error('지원하지 않는 파일 형식입니다. PDF, PPTX, 이미지 파일을 올려 주세요.');
+}
+
+async function analyzeFile(file) {
+  const ai = await getAI();
+  if (!ai?.key) throw new Error('Gemini API 키가 등록되지 않았습니다. 관리자가 마이페이지 > AI 설정에서 등록해야 합니다.');
+  const parts = await fileToParts(file);
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(ai.model || 'gemini-flash-latest')}:generateContent`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': ai.key },
+    body: JSON.stringify({ contents: [{ role: 'user', parts: [...parts, { text: AI_PROMPT }] }], generationConfig: { responseMimeType: 'application/json' } }),
+  });
+  const j = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error('분석에 실패했습니다: ' + (j.error?.message || res.status));
+  const text = (j.candidates?.[0]?.content?.parts || []).map((x) => x.text || '').join('').replace(/^```(?:json)?|```$/g, '').trim();
+  try { return JSON.parse(text); } catch (e) { throw new Error('분석 결과를 해석하지 못했습니다. 다시 시도해 주세요.'); }
+}
+
 async function addRole(wk) {
   const name = prompt(`〈${wk.title}〉 새 배역 이름 (예: 지수 역)`); if (!name?.trim()) return null;
   const desc = prompt('배역 설명 (선택) 예: 20대 학생, 주인공을 짝사랑하는 단짝') || '';
@@ -678,7 +842,7 @@ function renderWork(wid) {
   const mini = (p) => {
     const w = p.works.find((x) => x.workId === wid);
     const st = isProducer() ? STAGES[S.privates[p.id]?.stages?.[wid]] : '';
-    return `<div class="row" data-go="#/p/${p.id}"><div class="thumb">${p.photos?.[0] ? img(p.photos[0]) : '<i class="ti ti-user"></i>'}</div>
+    return `<div class="row" data-go="#/p/${p.id}"><div class="thumb">${p.photos?.[0] ? coverImg(p) : '<i class="ti ti-user"></i>'}</div>
       <div class="row-main"><div class="row-top"><span class="nm" style="font-size:14px">${esc(p.name)}</span>${p.featured ? CROWN : ''}</div>
       <div>${w.type === '지원' ? '<span class="pill-a">지원</span>' : '<span class="pill-s">직접 선택</span>'} ${st ? `<span class="lock-badge">${esc(st)}</span>` : ''}</div></div></div>`;
   };
@@ -705,7 +869,7 @@ function renderWork(wid) {
 
 /* ---------- 마이페이지 ---------- */
 async function renderMe(tab) {
-  const tabs = [['info', '내 정보'], ['favs', '즐겨찾기'], ...(isProducer() ? [['mine', '내가 등록한 프로필'], ['comments', '내 댓글'], ['bookmarklet', '필름메이커스 담기 버튼']] : []), ...(isOwner() ? [['members', '회원 관리']] : [])];
+  const tabs = [['info', '내 정보'], ['favs', '즐겨찾기'], ...(isProducer() ? [['mine', '내가 등록한 프로필'], ['comments', '내 댓글'], ['bookmarklet', '필름메이커스 담기 버튼']] : []), ...(isOwner() ? [['members', '회원 관리'], ['ai', 'AI 설정']] : [])];
   if (!tabs.some(([k]) => k === tab)) tab = 'info';
   view().innerHTML = `<div class="tabs">${tabs.map(([k, v]) => `<a href="#/me/${k}" class="${k === tab ? 'on' : ''}">${v}</a>`).join('')}</div><div id="tabbody"></div>`;
   const body = $('#tabbody');
@@ -752,6 +916,20 @@ async function renderMe(tab) {
       <p class="hint">전화번호는 필름메이커스에서 '전화번호 보기'를 먼저 눌러야 함께 저장됩니다. 첨부 PDF는 로그인 상태에서만 링크가 저장됩니다.</p></div>`;
     $('#bm').onclick = (e) => { e.preventDefault(); toast('클릭하지 말고 즐겨찾기 막대로 끌어다 놓아 주세요'); };
     $('#bmcopy').onclick = () => { navigator.clipboard.writeText(code); toast('복사되었습니다'); };
+  } else if (tab === 'ai') {
+    S.ai = null; const ai = (await getAI().catch(() => null)) || {};
+    body.innerHTML = `<div class="card" style="max-width:560px">
+      <div class="h2">프로필 파일 자동 입력 (Gemini)</div>
+      <p class="hint">PDF·PPTX 프로필을 분석하는 데 사용하는 Google Gemini API 키입니다. 키는 제작자 이상만 읽을 수 있도록 저장됩니다.</p>
+      <label class="f">API 키</label><input id="aikey" type="password" value="${esc(ai.key || '')}" placeholder="AIza…">
+      <label class="f">모델</label><input id="aimodel" value="${esc(ai.model || 'gemini-flash-latest')}">
+      <div class="hint" style="margin-top:4px">기본값 gemini-flash-latest는 최신 Flash 모델을 자동으로 사용합니다.</div>
+      <div class="inline" style="margin-top:12px"><button class="primary" id="aisave">저장</button></div>
+      <p class="hint" style="margin-top:14px">키 발급: aistudio.google.com 접속 → Get API key → Create API key</p></div>`;
+    $('#aisave').onclick = async () => {
+      try { await setDoc(doc(db, 'config', 'gemini'), { key: $('#aikey').value.trim(), model: $('#aimodel').value.trim() || 'gemini-flash-latest' }); S.ai = null; toast('저장되었습니다'); }
+      catch (e) { toast('저장에 실패했습니다: ' + e.message); }
+    };
   } else if (tab === 'members') {
     const snap = await getDocs(collection(db, 'users'));
     const us = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => ms(b.createdAt) - ms(a.createdAt));
@@ -817,13 +995,16 @@ function bookmarklet(SITE) {
     photos = photos.filter((p) => !p.isVideo).map((p) => new URL(p.src, location.origin).href);
   }
   const files = [...new Set([...main.querySelectorAll('a[href*="/files/download/"]')].map((a) => a.href))];
-  const cert = txt(filmoEl);
+  const cert = txt(filmoEl).replace(/\n\s*·\s*\n/g, ' · ').trim();
+  const norm = (x) => x.replace(/[\s·.,:;!?~\-–—()<>[\]〈〉《》「」'"‘’“”]/g, '').toLowerCase();
+  const fN = norm(cert);
+  const intro = bodyText.split('\n').map((l) => l.trim()).filter((l) => { const k = norm(l); return l && !(k.length >= 4 && fN.includes(k)); }).join('\n').trim();
   const data = {
     name: document.title.split(' 배우 프로필')[0].trim(),
     gender: gEl ? (gEl.textContent.trim() === '남자' ? '남' : '여') : '',
     birthYear: n(txt(field('출생년도'))), height: n(txt(field('신장'))), weight: n(txt(field('체중'))),
     specialty: txt(field('특기')), phone, email, insta, youtube, videos, photos, files,
-    filmo: [cert, bodyText].filter(Boolean).join('\n\n'),
+    filmo: cert, intro,
     fmUrl: location.href.split('?')[0].split('#')[0],
   };
   const w = window.open(SITE + '#/new', 'mestudio');
