@@ -628,7 +628,7 @@ function renderEdit(id) {
       <div class="hint">PDF, PPTX, 이미지 파일을 끌어다 놓거나 클릭하여 선택해 주세요. 비어 있는 칸만 채워지며, 이미 입력된 내용은 유지됩니다.</div></div>
       <input type="file" id="dropfile" accept=".pdf,.pptx,.jpg,.jpeg,.png,.webp" hidden>
     </div>
-    <div id="dropmsg" class="hint" style="margin:-6px 0 12px"></div>
+    <div id="dropmsg" class="hint" style="margin:-6px 0 12px">시간이 많이 소요됩니다. AI 서버 환경에 따라 실패하거나, 오류가 발생할 수 있습니다.</div>
     <div class="card">
       <div class="h2">기본 정보</div>
       <div class="row3">
@@ -682,7 +682,7 @@ function renderEdit(id) {
     if (!file) return;
     const msg = $('#dropmsg');
     drop.classList.add('busy'); msg.style.color = 'var(--sub)';
-    msg.innerHTML = `<i class="ti ti-loader-2 spin"></i> ${esc(file.name)} 분석 중입니다. 10~30초 정도 소요됩니다.`;
+    msg.innerHTML = `<i class="ti ti-loader-2 spin"></i> ${esc(file.name)} 분석 중입니다. 시간이 많이 소요됩니다. AI 서버 환경에 따라 실패하거나, 오류가 발생할 수 있습니다.`;
     try {
       const r = await analyzeFile(file);
       const map = { name: 'e_name', birthYear: 'e_birth', height: 'e_height', weight: 'e_weight', specialty: 'e_spec', phone: 'e_phone', email: 'e_email', insta: 'e_insta', youtube: 'e_yt', filmo: 'e_filmo', intro: 'e_intro' };
