@@ -79,6 +79,10 @@ main{max-width:1680px;margin:0 auto;padding:24px 40px 80px}
 .thumbs{display:grid;grid-template-columns:repeat(5,1fr);gap:5px;margin-top:6px}
 .thumbs img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:6px;cursor:pointer;border:2px solid transparent}
 .thumbs img.on{border-color:var(--ink)}
+.thumbs img.more{display:none}
+.thumbs.all img.more{display:block}
+.dtop>div:first-child{position:sticky;top:80px;align-self:start}
+.dtop>div:first-child:has(.thumbs.all){position:static}
 .dname{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .dname .n{font-size:24px;font-weight:800}
 .linkbtns{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0}
@@ -143,6 +147,7 @@ table.t select{width:auto}
   .top{padding:10px 14px}
   main{padding:14px}
   .layout,.dtop,.grid2{grid-template-columns:1fr}
+  .dtop>div:first-child{position:static}
   .filters{position:static}
   .stats{grid-template-columns:repeat(2,1fr)}
   .row2,.row3{grid-template-columns:1fr 1fr}
